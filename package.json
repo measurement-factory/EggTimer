@@ -20,5 +20,8 @@
   "bugs": {
     "url": "https://github.com/dgmltn/EggTimer/issues"
   },
-  "homepage": "https://github.com/dgmltn/EggTimer#readme"
+  "homepage": "https://github.com/dgmltn/EggTimer#readme",
+  "devDependencies": {
+    "eslint": "^4.9.0"
+  }
 }
