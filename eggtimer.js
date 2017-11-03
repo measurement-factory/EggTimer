@@ -32,13 +32,13 @@ const GITHUB_AUTHENTICATION = { type: 'token', username: CONFIG.github_username,
 //         mergeable: true|false
 //     }
 // }
-var prs = {};
+let prs = {};
 
 // commits references a pr url to a commit sha:
 // {
 //     'abcd1234...': 'https://github.com/dgmltn/api-test/pull/5',
 // }
-var commits = {};
+let commits = {};
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Webhook Handlers
@@ -46,8 +46,8 @@ var commits = {};
 
 http.createServer(function (req, res) {
   HANDLER(req, res, function (err) {
-    res.statusCode = 404
-    res.end('no such location')
+    res.statusCode = 404;
+    res.end('no such location');
   });
 }).listen(CONFIG.port);
 
@@ -58,10 +58,10 @@ HANDLER.on('error', function (err) {
 // https://developer.github.com/v3/activity/events/types/#pullrequestreviewevent
 HANDLER.on('pull_request_review', function(event) {
     const url = event.payload.pull_request.url;
-    const head_sha = event.payload.pull_request.head.sha;
+    const headSha = event.payload.pull_request.head.sha;
     const ref = event.payload.pull_request.head.ref;
     console.log(url + " -> pull_request_review");
-    ensurePr(url, head_sha);
+    ensurePr(url, headSha);
     prs[url].ref = ref;
     populateMergeable(url);
     populateReviews(url);
@@ -71,10 +71,10 @@ HANDLER.on('pull_request_review', function(event) {
 // https://developer.github.com/v3/activity/events/types/#pullrequestevent
 HANDLER.on('pull_request', function(event) {
     const url = event.payload.pull_request.url;
-    const head_sha = event.payload.pull_request.head.sha;
+    const headSha = event.payload.pull_request.head.sha;
     const ref = event.payload.pull_request.head.ref;
     console.log(url + " -> pull_request");
-    ensurePr(url, head_sha);
+    ensurePr(url, headSha);
     prs[url].ref = ref;
     populateMergeable(url);
     populateReviews(url);
@@ -86,7 +86,7 @@ HANDLER.on('status', function(event) {
     const sha = event.payload.sha;
     const context = event.payload.context;
     const state = event.payload.state;
-    var success = false;
+    let success = false;
     switch (state) {
         case 'success':
             success = true;
@@ -130,17 +130,17 @@ HANDLER.on('status', function(event) {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 // Initialize an empty pr
-function ensurePr(url, head_sha) {
+function ensurePr(url, headSha) {
     if (!(url in prs)) {
         prs[url] = {};
     }
-    if (!('head_sha' in prs[url]) || prs[url].head_sha != head_sha) {
-        prs[url].head_sha = head_sha;
+    if (!('headSha' in prs[url]) || prs[url].headSha !== headSha) {
+        prs[url].headSha = headSha;
         prs[url].checks = {};
         prs[url].reviews = {};
         prs[url].mergeable = false;
     }
-    commits[head_sha] = url;
+    commits[headSha] = url;
 }
 
 // GET pull requests and check their mergeable status
@@ -156,7 +156,7 @@ function populateMergeable(url) {
                 prs[url].mergeable = !!pr.data.mergeable;
                 mergeIfReady(url);
             }
-        )
+        );
     }, 10000);
 }
 
@@ -175,14 +175,14 @@ function populateReviews(url) {
             if ('data' in res) { res = res.data; }
 
             prs[url].reviews = {};
-            for (var i in res) {
+            for (let i in res) {
                 console.log("i = " + i);
-                var review = res[i];
+                let review = res[i];
                 console.log("review = " + JSON.stringify(review, null, " "));
-                var user = review.user.login;
+                let user = review.user.login;
                 // Since reviews are returned in chronological order, the last
                 // one found is the most recent. We'll use that one.
-                var approved = review.state.toLowerCase() == 'approved';
+                let approved = review.state.toLowerCase() === 'approved';
                 prs[url].reviews[user] = approved;
             }
 
@@ -197,7 +197,7 @@ function populateReviews(url) {
 // 3. >1 checks exist and all passed
 function mergeIfReady(url) {
     console.log(JSON.stringify(prs, null, 4));
-    if (url in prs 
+    if (url in prs
         && !prs[url].done
         && isMergeable(prs[url])
         && isApproved(prs[url])
@@ -239,7 +239,7 @@ function mergePullRequest(url, callback) {
         return;
     }
     const params = parsePullRequestUrl(url);
-    params.sha = prs[url].head_sha;
+    params.sha = prs[url].headSha;
     GITHUB.authenticate(GITHUB_AUTHENTICATION);
     GITHUB.pullRequests.merge(params, callback);
 }
@@ -268,9 +268,9 @@ function lookupPullRequest(owner, repo, sha, callback) {
             return;
         }
 
-        for (var i in res.data) {
+        for (let i in res.data) {
             const pr = res.data[i];
-            if (pr.head.sha == sha) {
+            if (pr.head.sha === sha) {
                 const url = pr.url;
                 callback(null, url);
                 return;
@@ -282,7 +282,7 @@ function lookupPullRequest(owner, repo, sha, callback) {
 }
 
 function parsePullRequestUrl(url) {
-    const re = /^https?:\/\/([^\/]+)\/repos\/([^\/]+)\/([^\/]+)\/pulls\/(\d+)$/;
+    const re = /^https?:\/\/([^/]+)\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/;
     const match = re.exec(url);
     return {
         owner: match[2],
@@ -302,7 +302,7 @@ function isApproved(obj) {
     else if (Object.keys(obj.reviews).length <= 0) {
         return false;
     }
-    for (var id in obj.reviews) {
+    for (let id in obj.reviews) {
         if (!obj.reviews[id]) {
             return false;
         }
@@ -317,7 +317,7 @@ function checksPassed(obj) {
     else if (Object.keys(obj.checks).length <= 0) {
         return false;
     }
-    for (var context in obj.checks) {
+    for (let context in obj.checks) {
         if (!obj.checks[context]) {
             return false;
         }
