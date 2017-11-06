@@ -1,6 +1,6 @@
 const fs = require('fs');
 const http = require('http');
-const githubWebhookHandler = require('github-webhook-handler');
+const createHandler = require('github-webhook-handler');
 const nodeGithub = require('github');
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -8,7 +8,7 @@ const nodeGithub = require('github');
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 const CONFIG = JSON.parse(fs.readFileSync('config.js'));
-const HANDLER = githubWebhookHandler({ path: CONFIG.github_webhook_path, secret: CONFIG.github_webhook_secret });
+const HANDLER = createHandler({ path: CONFIG.github_webhook_path, secret: CONFIG.github_webhook_secret });
 const GITHUB = new nodeGithub({ version: "3.0.0" });
 const GITHUB_AUTHENTICATION = { type: 'token', username: CONFIG.github_username, token: CONFIG.github_token };
 
@@ -44,19 +44,19 @@ let commits = {};
 // Webhook Handlers
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-http.createServer(function (req, res) {
-  HANDLER(req, res, function (err) {
+http.createServer((req, res) => {
+  HANDLER(req, res, (err) => {
     res.statusCode = 404;
     res.end('no such location');
   });
 }).listen(CONFIG.port);
 
-HANDLER.on('error', function (err) {
+HANDLER.on('error', (err) => {
   console.error('Error:', err.message);
 });
 
 // https://developer.github.com/v3/activity/events/types/#pullrequestreviewevent
-HANDLER.on('pull_request_review', function(event) {
+HANDLER.on('pull_request_review', (event) => {
     const url = event.payload.pull_request.url;
     const headSha = event.payload.pull_request.head.sha;
     const ref = event.payload.pull_request.head.ref;
@@ -69,7 +69,7 @@ HANDLER.on('pull_request_review', function(event) {
 });
 
 // https://developer.github.com/v3/activity/events/types/#pullrequestevent
-HANDLER.on('pull_request', function(event) {
+HANDLER.on('pull_request', (event) => {
     const url = event.payload.pull_request.url;
     const headSha = event.payload.pull_request.head.sha;
     const ref = event.payload.pull_request.head.ref;
@@ -82,7 +82,7 @@ HANDLER.on('pull_request', function(event) {
 });
 
 // https://developer.github.com/v3/activity/events/types/#statusevent
-HANDLER.on('status', function(event) {
+HANDLER.on('status', (event) => {
     const sha = event.payload.sha;
     const context = event.payload.context;
     const state = event.payload.state;
@@ -101,7 +101,7 @@ HANDLER.on('status', function(event) {
             break;
     }
 
-    const processUrl = function(err, url) {
+    const processUrl = (err, url) => {
         if (err) {
             console.error(err);
             return;
@@ -145,10 +145,10 @@ function ensurePr(url, headSha) {
 
 // GET pull requests and check their mergeable status
 function populateMergeable(url) {
-    setTimeout(function() {
+    setTimeout(() =>  {
         const params = parsePullRequestUrl(url);
         GITHUB.pullRequests.get(params,
-            function(err, pr) {
+            (err, pr) => {
                 if (!(url in prs)) {
                     console.error(url + " not found in prs hash");
                     return;
@@ -165,7 +165,7 @@ function populateReviews(url) {
     console.log("populateReviews(" + url + ")");
     const params = parsePullRequestUrl(url);
     GITHUB.pullRequests.getReviews(params,
-        function(err, res) {
+        (err, res) => {
             if (!(url in prs)) {
                 console.error(url + " not found in prs hash");
                 return;
@@ -207,7 +207,7 @@ function mergeIfReady(url) {
         prs[url].done = true;
         console.log("APPROVED (" + url + ")!");
 
-        const deleteCallback = function(err, res) {
+        const deleteCallback = (err, res) => {
             if (err) {
                 console.error("Error: could not delete ref: " + err);
                 return;
@@ -216,7 +216,7 @@ function mergeIfReady(url) {
             console.log("DELETED (" + url + ")!");
         };
 
-        const mergeCallback = function(err, res) {
+        const mergeCallback = (err, res) => {
             if (err) {
                 console.error("Error: could not merge: " + err);
                 delete prs[url].done;
@@ -261,7 +261,7 @@ function lookupPullRequest(owner, repo, sha, callback) {
         owner: owner,
         repo: repo
     };
-    GITHUB.pullRequests.getAll(params, function(err, res) {
+    GITHUB.pullRequests.getAll(params, (err, res) => {
         if (err) {
             console.log("err with pr.get: " + err);
             callback(err, null);
