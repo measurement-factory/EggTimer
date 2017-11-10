@@ -3,324 +3,252 @@ const http = require('http');
 const createHandler = require('github-webhook-handler');
 const nodeGithub = require('github');
 
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// Setup
-///////////////////////////////////////////////////////////////////////////////////////////////////
+const Config = JSON.parse(fs.readFileSync('config.js'));
+const WebhookHandler = createHandler({ path: Config.github_webhook_path, secret: Config.github_webhook_secret });
+const Github = new nodeGithub({ version: "3.0.0" });
+const GithubAuthentication = { type: 'token', username: Config.github_username, token: Config.github_token };
 
-const CONFIG = JSON.parse(fs.readFileSync('config.js'));
-const HANDLER = createHandler({ path: CONFIG.github_webhook_path, secret: CONFIG.github_webhook_secret });
-const GITHUB = new nodeGithub({ version: "3.0.0" });
-const GITHUB_AUTHENTICATION = { type: 'token', username: CONFIG.github_username, token: CONFIG.github_token };
 
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// PR state representation
-///////////////////////////////////////////////////////////////////////////////////////////////////
-
-// PRs contains status about incomplete pr's:
-// {
-//     'https://api.github.com/repos/dgmltn/api-test/pulls/5': {
-//         head_sha: 'abcd1234...',
-//         ref: 'my-pull-request',
-//         checks: {
-//             'context1': true|false,
-//             'context2': true|false
-//         },
-//         reviews: {
-//             'user1': true|false,
-//             'user2': true|false
-//         },
-//         mergeable: true|false
-//     }
-// }
-let prs = {};
-
-// commits references a pr url to a commit sha:
-// {
-//     'abcd1234...': 'https://github.com/dgmltn/api-test/pull/5',
-// }
-let commits = {};
+let PRList = [];
+let currentContext = null;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Webhook Handlers
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 http.createServer((req, res) => {
-  HANDLER(req, res, (err) => {
+  WebhookHandler(req, res, () => {
     res.statusCode = 404;
     res.end('no such location');
   });
-}).listen(CONFIG.port);
+}).listen(Config.port);
 
-HANDLER.on('error', (err) => {
+WebhookHandler.on('error', (err) => {
   console.error('Error:', err.message);
 });
 
 // https://developer.github.com/v3/activity/events/types/#pullrequestreviewevent
-HANDLER.on('pull_request_review', (event) => {
-    const url = event.payload.pull_request.url;
-    const headSha = event.payload.pull_request.head.sha;
-    const ref = event.payload.pull_request.head.ref;
-    console.log(url + " -> pull_request_review");
-    ensurePr(url, headSha);
-    prs[url].ref = ref;
-    populateMergeable(url);
-    populateReviews(url);
-    mergeIfReady(url);
+WebhookHandler.on('pull_request_review', (ev) => {
+    const pr = ev.payload.pull_request;
+    const review = ev.payload.review;
+    console.log("pull_request_review event:", ev.payload.id, pr.number, pr.head.sha, pr.state, review.state);
+    processEvent();
 });
 
 // https://developer.github.com/v3/activity/events/types/#pullrequestevent
-HANDLER.on('pull_request', (event) => {
-    const url = event.payload.pull_request.url;
-    const headSha = event.payload.pull_request.head.sha;
-    const ref = event.payload.pull_request.head.ref;
-    console.log(url + " -> pull_request");
-    ensurePr(url, headSha);
-    prs[url].ref = ref;
-    populateMergeable(url);
-    populateReviews(url);
-    mergeIfReady(url);
+WebhookHandler.on('pull_request', (ev) => {
+    const pr = ev.payload.pull_request;
+    console.log("pull_request event:", ev.payload.id, pr.number, pr.head.sha, pr.state);
+    processEvent();
 });
 
 // https://developer.github.com/v3/activity/events/types/#statusevent
-HANDLER.on('status', (event) => {
-    const sha = event.payload.sha;
-    const context = event.payload.context;
-    const state = event.payload.state;
-    let success = false;
-    switch (state) {
-        case 'success':
-            success = true;
-            break;
-        case 'pending':
-        case 'failure':
-        case 'error':
-            // success = false, still
-            break;
-        default:
-            console.error("Unknown check state '" + state + "'. success = false");
-            break;
-    }
-
-    const processUrl = (err, url) => {
-        if (err) {
-            console.error(err);
-            return;
-        }
-
-        console.log(url + " -> status");
-        ensurePr(url, sha);
-        prs[url].checks[context] = success;
-        populateMergeable(url);
-        populateReviews(url);
-        mergeIfReady(url);
-    };
-
-    if (sha in commits) {
-        processUrl(null, commits[sha]);
-    }
-    else {
-        const owner = event.payload.repository.owner.login;
-        const repo = event.payload.repository.name;
-        lookupPullRequest(owner, repo, sha, processUrl);
-    }
+WebhookHandler.on('status', (ev) => {
+    const e = ev.payload;
+    console.log("status event:", e.id, e.sha, e.context, e.state);
+    processEvent();
 });
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Private helpers
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Initialize an empty pr
-function ensurePr(url, headSha) {
-    if (!(url in prs)) {
-        prs[url] = {};
+function processEvent() {
+    if (currentContext !== null) {
+        console.log("Signaling PR:", currentContext.number, currentContext.pr.head.sha);
+        currentContext.signaled = true;
     }
-    if (!('headSha' in prs[url]) || prs[url].headSha !== headSha) {
-        prs[url].headSha = headSha;
-        prs[url].checks = {};
-        prs[url].reviews = {};
-        prs[url].mergeable = false;
-    }
-    commits[headSha] = url;
+    getPRList();
 }
 
-// GET pull requests and check their mergeable status
-function populateMergeable(url) {
-    setTimeout(() =>  {
-        const params = parsePullRequestUrl(url);
-        GITHUB.pullRequests.get(params,
-            (err, pr) => {
-                if (!(url in prs)) {
-                    console.error(url + " not found in prs hash");
-                    return;
-                }
-                prs[url].mergeable = !!pr.data.mergeable;
-                mergeIfReady(url);
-            }
-        );
-    }, 10000);
-}
-
-// GET pr reviews and check their approved status. Replace existing reviews.
-function populateReviews(url) {
-    console.log("populateReviews(" + url + ")");
-    const params = parsePullRequestUrl(url);
-    GITHUB.pullRequests.getReviews(params,
-        (err, res) => {
-            if (!(url in prs)) {
-                console.error(url + " not found in prs hash");
-                return;
-            }
-
-            // A bug in 'github' node module?
-            if ('data' in res) { res = res.data; }
-
-            prs[url].reviews = {};
-            for (let i in res) {
-                console.log("i = " + i);
-                let review = res[i];
-                console.log("review = " + JSON.stringify(review, null, " "));
-                let user = review.user.login;
-                // Since reviews are returned in chronological order, the last
-                // one found is the most recent. We'll use that one.
-                let approved = review.state.toLowerCase() === 'approved';
-                prs[url].reviews[user] = approved;
-            }
-
-            mergeIfReady(url);
-        }
-    );
-}
-
-// Perform a merge on this PR if:
-// 1. it's mergeable
-// 2. >1 reviews exist and all are approved
-// 3. >1 checks exist and all passed
-function mergeIfReady(url) {
-    console.log(JSON.stringify(prs, null, 4));
-    if (url in prs
-        && !prs[url].done
-        && isMergeable(prs[url])
-        && isApproved(prs[url])
-        && checksPassed(prs[url])) {
-
-        // APPROVED!
-        prs[url].done = true;
-        console.log("APPROVED (" + url + ")!");
-
-        const deleteCallback = (err, res) => {
-            if (err) {
-                console.error("Error: could not delete ref: " + err);
-                return;
-            }
-            delete prs[url];
-            console.log("DELETED (" + url + ")!");
-        };
-
-        const mergeCallback = (err, res) => {
-            if (err) {
-                console.error("Error: could not merge: " + err);
-                delete prs[url].done;
-                return;
-            }
-            console.log("MERGED (" + url + ")!");
-
-            if (CONFIG.delete_after_merge) {
-                deleteReference(url, deleteCallback);
-            }
-        };
-
-        mergePullRequest(url, mergeCallback);
-    }
-}
-
-function mergePullRequest(url, callback) {
-    if (!(url in prs)) {
-        console.error(url + " not found in prs hash");
+function processNextPR() {
+    if (PRList.length === 0) {
+        console.log("No more PRs to process.");
         return;
     }
-    const params = parsePullRequestUrl(url);
-    params.sha = prs[url].headSha;
-    GITHUB.authenticate(GITHUB_AUTHENTICATION);
-    GITHUB.pullRequests.merge(params, callback);
+    let prContext = createPRContext(PRList.shift());
+    console.log("Processing PR:", prContext.pr.number, prContext.pr.head.sha);
+    currentContext = prContext;
+    populateMergeable(prContext);
+    populateStatuses(prContext);
+    populateReviews(prContext);
 }
 
-function deleteReference(url, callback) {
-    if (!(url in prs)) {
-        console.error(url + " not found in prs hash");
-        return;
-    }
-    const params = parsePullRequestUrl(url);
-    params.ref = 'heads/' + prs[url].ref;
-    GITHUB.authenticate(GITHUB_AUTHENTICATION);
-    GITHUB.gitdata.deleteReference(params, callback);
+function createPRContext(pr) {
+    let prContext = {};
+    prContext.pr = pr;
+    prContext.checks = {};
+    prContext.reviews = {};
+    prContext.signaled = false;
+    prContext.aborted = false;
+    prContext.mergeable = false;
+    prContext.responses = 0;
+    return prContext;
 }
 
-// Finds the PR URL associated with the given head SHA
-function lookupPullRequest(owner, repo, sha, callback) {
-    const params = {
-        owner: owner,
-        repo: repo
+function prRequestParams() {
+    return {
+        owner: Config.owner,
+        repo: Config.repo
     };
-    GITHUB.pullRequests.getAll(params, (err, res) => {
-        if (err) {
-            console.log("err with pr.get: " + err);
-            callback(err, null);
-            return;
-        }
+}
 
-        for (let i in res.data) {
-            const pr = res.data[i];
-            if (pr.head.sha === sha) {
-                const url = pr.url;
-                callback(null, url);
-                return;
-            }
-        }
-
-        callback("PR not found: (" + owner + ", " + repo + ", " + sha + ")", null);
+function populateMergeable(prContext) {
+    let params = prRequestParams();
+    params.number = prContext.pr.number;
+    console.log("Getting PR info", prContext.pr.number, prContext.pr.head.sha);
+    Github.authenticate(GithubAuthentication);
+    Github.pullRequests.get(params, (err, pr) => {
+       if (err) {
+           console.error("Error! Could not get a single PR:", err);
+           prContext.aborted = true;
+           return;
+       }
+       prContext.responses++;
+       console.log("Got PR info", pr.data.number);
+       prContext.mergeable = pr.data.mergeable;
+       mergeIfReady(prContext);
     });
 }
 
-function parsePullRequestUrl(url) {
-    const re = /^https?:\/\/([^/]+)\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/;
-    const match = re.exec(url);
-    return {
-        owner: match[2],
-        repo: match[3],
-        number: match[4]
-    };
-}
-
-function isMergeable(obj) {
-    return 'mergeable' in obj && !!obj.mergeable;
-}
-
-function isApproved(obj) {
-    if (!('reviews' in obj)) {
-        return false;
-    }
-    else if (Object.keys(obj.reviews).length <= 0) {
-        return false;
-    }
-    for (let id in obj.reviews) {
-        if (!obj.reviews[id]) {
-            return false;
+function populateStatuses(prContext) {
+  let params = prRequestParams();
+  params.ref = prContext.pr.head.sha;
+  console.log("Getting statuses for PR", prContext.pr.number, prContext.pr.head.sha);
+  Github.authenticate(GithubAuthentication);
+  Github.repos.getStatuses(params,
+      (err, res) => {
+        if (err) {
+            console.error("Error! Could not get statuses:", err);
+            prContext.aborted = true;
+            return;
         }
-    }
-    return true;
+        console.log("Got", res.data.length, "statuses for PR", prContext.pr.number, prContext.pr.head.sha);
+        prContext.responses++;
+        // Statuses are returned in reverse chronological order.
+        for (let st of res.data) {
+            console.log(st.context, st.state);
+            if (!(st.context in prContext.checks)) {
+                console.log("adding", st.context, st.state);
+                prContext.checks[st.context] = (st.state === 'success');
+            }
+        }
+
+        mergeIfReady(prContext);
+  });
 }
 
-function checksPassed(obj) {
-    if (!('checks' in obj)) {
-        return false;
-    }
-    else if (Object.keys(obj.checks).length <= 0) {
-        return false;
-    }
-    for (let context in obj.checks) {
-        if (!obj.checks[context]) {
-            return false;
+function populateReviews(prContext) {
+    let params = prRequestParams();
+    params.number = prContext.pr.number;
+    console.log("Getting reviews for PR", prContext.pr.number, prContext.pr.head.sha);
+    Github.authenticate(GithubAuthentication);
+    Github.pullRequests.getReviews(params, (err, res) => {
+        if (err) {
+            console.error("Error! Could not get reviews:", err);
+            prContext.aborted = true;
+            return;
         }
-    }
-    return true;
+        prContext.responses++;
+        console.log("Got", res.data.length, "reviews for PR", prContext.pr.number, prContext.pr.head.sha);
+        for (let review of res.data) {
+            console.log(review.state, review.user.login);
+            // Reviews are returned in chronological order
+            if (review.state.toLowerCase() === "approved")
+                prContext.reviews[review.user.login] = true;
+        }
+        mergeIfReady(prContext);
+    });
 }
+
+function mergeIfReady(prContext) {
+    if (prContext.signaled) {
+        console.log("Do not merge PR", prContext.pr.number, "due to signaled");
+        return;
+    }
+    if (prContext.aborted) {
+        console.log("Do not merge PR", prContext.pr.number, "due to aborted");
+        processNextPR();
+        return;
+    }
+    if (!checksReceived(prContext)) {
+        console.log("Do not yet merge PR", prContext.pr.number + ",", "waiting data from Github");
+        return;
+    }
+
+    if (!readyForMerge(prContext)) {
+        console.log("Can not merge PR: not ready", prContext.pr.number);
+        processNextPR();
+        return;
+    }
+
+    console.log("Will merge PR", prContext.pr.number, prContext.pr.head.sha);
+    if (!Config.dry_run) {
+        let params = prRequestParams();
+        params.number = prContext.pr.number;
+        params.sha = prContext.pr.head.sha;
+        Github.authenticate(GithubAuthentication);
+        Github.pullRequests.merge(params, (err, res) => {
+            if (err) {
+                console.error("Error: could not merge: ", err);
+                return;
+            }
+            if (res.data.merged !== undefined && res.data.merged === true)
+                console.log("Successfully merged PR", prContext.pr.number, prContext.pr.head.sha);
+            else
+                console.log("PR(", prContext.pr.number, prContext.pr.head.sha, ") merge error:", res.data.message);
+
+            processNextPR();
+        });
+    }
+    processNextPR();
+}
+
+function getPRList() {
+    PRList = [];
+    Github.authenticate(GithubAuthentication);
+    Github.pullRequests.getAll(prRequestParams(), (err, res) => {
+        if (err) {
+            console.error("Error! Could not get all PRs:", err);
+            return;
+        }
+        if (res.data.length === 0) {
+            console.log("No open PR found on Github");
+            return;
+        }
+        console.log("Will process", res.data.length, "open PRs");
+        PRList = res.data;
+        processNextPR();
+    });
+}
+
+function checksReceived(prContext) {
+    return prContext.responses >= 3;
+}
+
+function readyForMerge(prContext) {
+    console.log(prContext.aborted, prContext.signaled, isMergeable(prContext), isApproved(prContext), checksPassed(prContext));
+    return (!prContext.aborted && !prContext.signaled && isMergeable(prContext) && isApproved(prContext) && checksPassed(prContext));
+}
+
+function isMergeable(prContext) {
+    return prContext.mergeable === true;
+}
+
+function checkPropertyAllValues(obj) {
+    if (obj === undefined || !Object.keys(obj).length)
+        return false;
+    return (Object.values(obj).find((val) => { return val === false; })) === undefined;
+}
+
+function isApproved(prContext) {
+    return checkPropertyAllValues(prContext.reviews);
+}
+
+function checksPassed(prContext) {
+    return checkPropertyAllValues(prContext.checks);
+}
+
+// run once on startup
+processEvent();
+
