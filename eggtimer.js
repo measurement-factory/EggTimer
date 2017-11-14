@@ -2,6 +2,8 @@ const fs = require('fs');
 const http = require('http');
 const createHandler = require('github-webhook-handler');
 const nodeGithub = require('github');
+const Promise = require("bluebird");
+const assert = require('assert');
 
 const Config = JSON.parse(fs.readFileSync('config.js'));
 const WebhookHandler = createHandler({ path: Config.github_webhook_path, secret: Config.github_webhook_secret });
@@ -12,9 +14,7 @@ const GithubAuthentication = { type: 'token', username: Config.github_username, 
 let PRList = [];
 let currentContext = null;
 
-///////////////////////////////////////////////////////////////////////////////////////////////////
 // Webhook Handlers
-///////////////////////////////////////////////////////////////////////////////////////////////////
 
 http.createServer((req, res) => {
   WebhookHandler(req, res, () => {
@@ -46,24 +46,41 @@ WebhookHandler.on('pull_request', (ev) => {
 WebhookHandler.on('status', (ev) => {
     const e = ev.payload;
     console.log("status event:", e.id, e.sha, e.context, e.state);
-    processEvent();
+    if (merging(e.sha)) {
+        currentContext.signaled = true;
+        mergeAutoIntoMaster(currentContext);
+    } else
+        processEvent();
 });
 
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// Private helpers
-///////////////////////////////////////////////////////////////////////////////////////////////////
+
+function merging(sha) {
+    return (currentContext !== null && currentContext.mergedAutoSha !== null && sha === currentContext.mergedAutoSha);
+}
+
+function signaled() {
+    return (currentContext !== null && currentContext.signaled);
+}
 
 function processEvent() {
     if (currentContext !== null) {
         console.log("Signaling PR:", currentContext.number, currentContext.pr.head.sha);
         currentContext.signaled = true;
+    } else {
+        processNextPR();
     }
-    getPRList();
 }
 
-function processNextPR() {
-    if (PRList.length === 0) {
+function processNextPR(startup) {
+    if (startup) {
+        getPRList();
+        return;
+    } else if (PRList.length === 0 && !signaled()) {
         console.log("No more PRs to process.");
+        return;
+    } else if (signaled()) {
+        currentContext = null;
+        getPRList();
         return;
     }
     let prContext = createPRContext(PRList.shift());
@@ -83,6 +100,7 @@ function createPRContext(pr) {
     prContext.aborted = false;
     prContext.mergeable = false;
     prContext.responses = 0;
+    prContext.mergedAutoSha = null;
     return prContext;
 }
 
@@ -164,6 +182,7 @@ function populateReviews(prContext) {
 function mergeIfReady(prContext) {
     if (prContext.signaled) {
         console.log("Do not merge PR", prContext.pr.number, "due to signaled");
+        processNextPR();
         return;
     }
     if (prContext.aborted) {
@@ -184,22 +203,8 @@ function mergeIfReady(prContext) {
 
     console.log("Will merge PR", prContext.pr.number, prContext.pr.head.sha);
     if (!Config.dry_run) {
-        let params = prRequestParams();
-        params.number = prContext.pr.number;
-        params.sha = prContext.pr.head.sha;
-        Github.authenticate(GithubAuthentication);
-        Github.pullRequests.merge(params, (err, res) => {
-            if (err) {
-                console.error("Error: could not merge: ", err);
-                return;
-            }
-            if (res.data.merged !== undefined && res.data.merged === true)
-                console.log("Successfully merged PR", prContext.pr.number, prContext.pr.head.sha);
-            else
-                console.log("PR(", prContext.pr.number, prContext.pr.head.sha, ") merge error:", res.data.message);
-
-            processNextPR();
-        });
+        mergePRintoAuto(prContext);
+        return;
     }
     processNextPR();
 }
@@ -236,7 +241,7 @@ function isMergeable(prContext) {
 }
 
 function checkPropertyAllValues(obj) {
-    if (obj === undefined || !Object.keys(obj).length)
+    if (obj === undefined || Object.keys(obj).length < Config.checks_number)
         return false;
     return (Object.values(obj).find((val) => { return val === false; })) === undefined;
 }
@@ -249,6 +254,169 @@ function checksPassed(prContext) {
     return checkPropertyAllValues(prContext.checks);
 }
 
-// run once on startup
-processEvent();
+
+// =========== Auto branch ================
+
+function getStatuses(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.repos.getStatuses(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not get statuses for sha " + params.ref + " : "+ err);
+                return;
+            }
+            console.log("Got", res.data.length, "statuses for sha:", params.ref);
+            // Statuses are returned in reverse chronological order.
+            let checks = {};
+            for (let st of res.data) {
+                console.log(st.context, st.state);
+                if (!(st.context in checks)) {
+                    if (st.state !== 'pending') {
+                        console.log("adding", st.context, st.state);
+                        checks[st.context] = (st.state === 'success');
+                    }
+                }
+            }
+            resolve(checks);
+       });
+    });
+}
+
+function getReference(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.gitdata.getReference(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not get master head reference: " + err);
+                return;
+            }
+            console.log("Got master head sha:", res.data.object.sha);
+            resolve(res.data.object.sha);
+        });
+  });
+}
+
+function updateReference(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.gitdata.updateReference(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not update reference: " + err);
+                return;
+            }
+            console.log("Updated reference to sha:", res.data.object.sha);
+            resolve(res.data.object.sha);
+       });
+    });
+}
+
+function changePRBase(params) {
+   return new Promise( (resolve, reject) => {
+     Github.authenticate(GithubAuthentication);
+     Github.pullRequests.update(params, (err, res) => {
+        if (err) {
+            reject("Error! Could not change PR base: " + err);
+            return;
+        }
+        console.log("Changed PR", res.data.number, "base to: ", res.data.base.sha, res.data.base.ref);
+        resolve(res.data.base.sha);
+     });
+  });
+}
+
+function mergePR(params) {
+   return new Promise( (resolve, reject) => {
+       Github.authenticate(GithubAuthentication);
+       Github.pullRequests.merge(params, (err, res) => {
+           if (err) {
+               reject("Error! Could not merge PR " + params.number);
+               return;
+           }
+           console.log("Merged PR", params.number, "sha:", res.data.sha);
+           resolve(res.data.sha);
+       });
+   });
+}
+
+function mergeAutoIntoMaster(prContext) {
+    let params = prRequestParams();
+    assert(prContext.mergedAutoSha);
+    params.ref = prContext.mergedAutoSha;
+    getStatuses(params)
+        .then((checks) => {
+            // some checks not completed yet, will wait
+            if (Object.keys(checks).length < Config.checks_number) {
+                console.log("Waiting for more auto_branch statuses completing for PR:", prContext.pr.number);
+                return null;
+             }
+            // some checks failed, drop our merge results
+            if (!checkPropertyAllValues(checks)) {
+                console.error("Some auto_branch checks failed for PR:", prContext.pr.number);
+                processNextPR();
+                return null;
+            } else {
+                // merge master into auto_branch (ff merge).
+                let updateParams = prRequestParams();
+                updateParams.ref = "heads/" + Config.master;
+                updateParams.sha = prContext.mergedAutoSha;
+                updateParams.ref = false; // default (ensure we do ff merge).
+                return updateReference(updateParams);
+            }
+        })
+        .then((sha) => {
+             if (sha !== null) {
+                 assert(sha === params.ref);
+                 // ff merge completed successfully
+                 processNextPR();
+             }
+        })
+        .catch((err) => {
+            console.error("Error merging auto_branch(" + prContext.mergedAutoSha + ") into master:", err);
+            processNextPR();
+        });
+}
+
+function mergePRintoAuto(prContext) {
+    let getParams = prRequestParams();
+    getParams.ref = "heads/master";
+    getReference(getParams)
+        .then((sha) => {
+            let params = prRequestParams();
+            params.ref = "heads/" + Config.auto_branch;
+            params.sha = sha;
+            params.force = true;
+            return updateReference(params);
+        })
+        .then((sha) => {
+            let params = prRequestParams();
+            params.number = prContext.pr.number;
+            params.base = Config.auto_branch;
+            return changePRBase(params);
+        })
+        .then((sha) => {
+            let params = prRequestParams();
+            params.number = prContext.pr.number;
+            params.commit_title = prContext.pr.title;
+            params.commit_message = prContext.pr.body + "(PR #" + prContext.pr.number.toString() + ")";
+            params.sha = prContext.pr.head.sha;
+            params.merge_method = "squash";
+            return mergePR(params);
+        })
+        .then((sha) => {
+              prContext.mergedAutoSha = sha;
+        })
+        .catch((err) => {
+            console.error("Error while merging PR("+prContext.pr.number.toString()+") into auto_branch:", err);
+            processNextPR();
+         })
+        .finally(() => {
+            let params = prRequestParams();
+            params.number = prContext.pr.number;
+            params.base = "master";
+            return changePRBase(params);
+        });
+}
+
+// startup
+processNextPR(true);
 
