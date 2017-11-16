@@ -353,6 +353,22 @@ function updatePR(params) {
   });
 }
 
+function addLabels(params) {
+   return new Promise( (resolve, reject) => {
+     Github.authenticate(GithubAuthentication);
+     Github.issues.addLabels(params, (err, res) => {
+        if (err) {
+            reject("Error! Could not add label to PR" + params.number + ":" + err);
+            return;
+        }
+        console.log("PR" + params.number.toString(), "labels total:", res.data.length);
+        for (let label of res.data)
+           console.log("PR label name:", label.name);
+        resolve(true);
+     });
+  });
+}
+
 function mergeAutoIntoMaster(prContext) {
     let params = prRequestParams();
     assert(prContext.mergedAutoSha);
@@ -388,6 +404,14 @@ function mergeAutoIntoMaster(prContext) {
         })
         .then((state) => {
              assert(state === null || state === "closed");
+             let labelParams = prRequestParams();
+             labelParams.number = prContext.pr.number.toString();
+             labelParams.labels = [];
+             labelParams.labels.push("S-merged");
+             return addLabels(labelParams);
+         })
+        .then((result) => {
+             assert(result === true);
              processNextPR();
          })
         .catch((err) => {
