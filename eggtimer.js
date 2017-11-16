@@ -4,6 +4,7 @@ const createHandler = require('github-webhook-handler');
 const nodeGithub = require('github');
 const Promise = require("bluebird");
 const assert = require('assert');
+const endOfLine = require('os').EOL;
 
 const Config = JSON.parse(fs.readFileSync('config.js'));
 const WebhookHandler = createHandler({ path: Config.github_webhook_path, secret: Config.github_webhook_secret });
@@ -282,6 +283,34 @@ function getStatuses(params) {
     });
 }
 
+function getCommit(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.gitdata.getCommit(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not get commit " + params.sha + ":" + err);
+                return;
+            }
+            console.log("Got commit, sha:", res.data.sha, "treeSha:", res.data.tree.sha);
+            resolve({sha: res.data.sha, treeSha: res.data.tree.sha});
+        });
+  });
+}
+
+function createCommit(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.gitdata.createCommit(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not create commit " + params.sha + ":" + err);
+                return;
+            }
+            console.log("Created commit, sha:", res.data.sha);
+            resolve(res.data.sha);
+        });
+  });
+}
+
 function getReference(params) {
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
@@ -310,32 +339,18 @@ function updateReference(params) {
     });
 }
 
-function changePRBase(params) {
+function updatePR(params) {
    return new Promise( (resolve, reject) => {
      Github.authenticate(GithubAuthentication);
      Github.pullRequests.update(params, (err, res) => {
         if (err) {
-            reject("Error! Could not change PR base: " + err);
+            reject("Error! Could not update PR: " + err);
             return;
         }
-        console.log("Changed PR", res.data.number, "base to: ", res.data.base.sha, res.data.base.ref);
-        resolve(res.data.base.sha);
+        console.log("Updated PR:", res.data.number, res.data.state);
+        resolve(res.data.state);
      });
   });
-}
-
-function mergePR(params) {
-   return new Promise( (resolve, reject) => {
-       Github.authenticate(GithubAuthentication);
-       Github.pullRequests.merge(params, (err, res) => {
-           if (err) {
-               reject("Error! Could not merge PR " + params.number);
-               return;
-           }
-           console.log("Merged PR", params.number, "sha:", res.data.sha);
-           resolve(res.data.sha);
-       });
-   });
 }
 
 function mergeAutoIntoMaster(prContext) {
@@ -364,12 +379,17 @@ function mergeAutoIntoMaster(prContext) {
             }
         })
         .then((sha) => {
-             if (sha !== null) {
-                 assert(sha === params.ref);
-                 // ff merge completed successfully
-                 processNextPR();
-             }
+             if (sha === null)
+                 return null;
+             assert(sha === params.ref);
+             let prParams = prRequestParams();
+             prParams.state = "closed";
+             return updatePR(prParams);
         })
+        .then((state) => {
+             assert(state === null || state === "closed");
+             processNextPR();
+         })
         .catch((err) => {
             console.error("Error merging auto_branch(" + prContext.mergedAutoSha + ") into master:", err);
             processNextPR();
@@ -379,7 +399,27 @@ function mergeAutoIntoMaster(prContext) {
 function mergePRintoAuto(prContext) {
     let getParams = prRequestParams();
     getParams.ref = "heads/master";
+    let masterSha = null;
     getReference(getParams)
+        .then((sha) => {
+            masterSha = sha;
+            let params = prRequestParams();
+            params.ref = "pull/" + prContext.pr.number.toString() + "/merge";
+            return getReference(params);
+        })
+        .then((sha) => {
+            let params = prRequestParams();
+            params.sha = sha;
+            return getCommit(params);
+        })
+        .then((obj) => {
+            let params = prRequestParams();
+            params.tree = obj.treeSha;
+            params.message = prContext.pr.title + endOfLine + prContext.pr.body + endOfLine + "(PR #" + prContext.pr.number.toString() + ")";
+            params.parents = [];
+            params.parents.push(masterSha.toString());
+            return createCommit(params);
+        })
         .then((sha) => {
             let params = prRequestParams();
             params.ref = "heads/" + Config.auto_branch;
@@ -388,32 +428,11 @@ function mergePRintoAuto(prContext) {
             return updateReference(params);
         })
         .then((sha) => {
-            let params = prRequestParams();
-            params.number = prContext.pr.number;
-            params.base = Config.auto_branch;
-            return changePRBase(params);
-        })
-        .then((sha) => {
-            let params = prRequestParams();
-            params.number = prContext.pr.number;
-            params.commit_title = prContext.pr.title;
-            params.commit_message = prContext.pr.body + "(PR #" + prContext.pr.number.toString() + ")";
-            params.sha = prContext.pr.head.sha;
-            params.merge_method = "squash";
-            return mergePR(params);
-        })
-        .then((sha) => {
-              prContext.mergedAutoSha = sha;
+            prContext.mergedAutoSha = sha;
         })
         .catch((err) => {
             console.error("Error while merging PR("+prContext.pr.number.toString()+") into auto_branch:", err);
             processNextPR();
-         })
-        .finally(() => {
-            let params = prRequestParams();
-            params.number = prContext.pr.number;
-            params.base = "master";
-            return changePRBase(params);
         });
 }
 
