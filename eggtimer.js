@@ -64,22 +64,22 @@ function signaled() {
 
 function processEvent() {
     if (currentContext !== null) {
-        console.log("Signaling PR:", currentContext.number, currentContext.pr.head.sha);
+        console.log("Signaling PR:", currentContext.pr.number, currentContext.pr.head.sha);
         currentContext.signaled = true;
     } else {
-        processNextPR();
+        processNextPR(true);
     }
 }
 
-function processNextPR(startup) {
-    if (startup) {
+function processNextPR(all) {
+    currentContext = null;
+    if (all) {
         getPRList();
         return;
     } else if (PRList.length === 0 && !signaled()) {
         console.log("No more PRs to process.");
         return;
     } else if (signaled()) {
-        currentContext = null;
         getPRList();
         return;
     }
@@ -240,18 +240,18 @@ function isMergeable(prContext) {
     return prContext.mergeable === true;
 }
 
-function checkPropertyAllValues(obj) {
-    if (obj === undefined || Object.keys(obj).length < Config.checks_number)
+function checkPropertyAllValues(obj, num) {
+    if (obj === undefined || Object.keys(obj).length < num)
         return false;
     return (Object.values(obj).find((val) => { return val === false; })) === undefined;
 }
 
 function isApproved(prContext) {
-    return checkPropertyAllValues(prContext.reviews);
+    return checkPropertyAllValues(prContext.reviews, Config.reviews_number);
 }
 
 function checksPassed(prContext) {
-    return checkPropertyAllValues(prContext.checks);
+    return checkPropertyAllValues(prContext.checks, Config.checks_number);
 }
 
 
@@ -350,16 +350,16 @@ function mergeAutoIntoMaster(prContext) {
                 return null;
              }
             // some checks failed, drop our merge results
-            if (!checkPropertyAllValues(checks)) {
+            if (!checkPropertyAllValues(checks, Config.checks_number)) {
                 console.error("Some auto_branch checks failed for PR:", prContext.pr.number);
                 processNextPR();
                 return null;
             } else {
                 // merge master into auto_branch (ff merge).
                 let updateParams = prRequestParams();
-                updateParams.ref = "heads/" + Config.master;
+                updateParams.ref = "heads/master";
                 updateParams.sha = prContext.mergedAutoSha;
-                updateParams.ref = false; // default (ensure we do ff merge).
+                updateParams.force = false; // default (ensure we do ff merge).
                 return updateReference(updateParams);
             }
         })
