@@ -312,6 +312,20 @@ function getStatuses(params) {
     });
 }
 
+function getCommit(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.gitdata.getCommit(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not get commit " + params.sha + ":" + err);
+                return;
+            }
+            console.log("Got commit, sha:", res.data.sha, "treeSha:", res.data.tree.sha);
+            resolve({sha: res.data.sha, treeSha: res.data.tree.sha});
+        });
+  });
+}
+
 function createCommit(params) {
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
@@ -384,20 +398,6 @@ function addLabels(params) {
   });
 }
 
-function mergeBranches(params) {
-    return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.repos.merge(params, (err, res) => {
-            if (err) {
-                reject("Error! Could not merge from " + params.head + " to " + params.base + ": ", err);
-                return;
-            }
-            console.log("Merged: got", res.data.sha, "from", res.data.parents[0], "and", res.data.parents[1]);
-            resolve({sha: res.data.sha, treeSha: res.data.tree.sha});
-       });
-    });
-}
-
 function mergeAutoIntoMaster(prContext) {
     let params = prRequestParams();
     assert(prContext.mergedAutoSha);
@@ -466,19 +466,16 @@ function mergePRintoAuto(prContext) {
     getParams.ref = "heads/master";
     let masterSha = null;
     getReference(getParams)
-         .then((sha) => {
+        .then((sha) => {
+            masterSha = sha;
             let params = prRequestParams();
-            params.ref = "heads/" + Config.auto_branch;
-            params.sha = sha;
-            params.force = true;
-            return updateReference(params);
+            params.ref = "pull/" + prContext.pr.number.toString() + "/merge";
+            return getReference(params);
         })
         .then((sha) => {
             let params = prRequestParams();
-            params.base = Config.auto_branch;
-            params.head = prContext.pr.head.sha;
-            params.message = "Bot merged " + prContext.pr.head.sha + " into " + Config.auto_branch;
-            return mergeBranches(params);
+            params.sha = sha;
+            return getCommit(params);
         })
         .then((obj) => {
             let params = prRequestParams();
