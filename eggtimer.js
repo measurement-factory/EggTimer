@@ -49,14 +49,14 @@ WebhookHandler.on('status', (ev) => {
     console.log("status event:", e.id, e.sha, e.context, e.state);
     if (merging(e.sha)) {
         currentContext.signaled = true;
-        mergeAutoIntoMaster(currentContext);
+        finishMerging(currentContext);
     } else
         processEvent();
 });
 
 
 function merging(sha) {
-    return (currentContext !== null && currentContext.mergedAutoSha !== null && sha === currentContext.mergedAutoSha);
+    return (currentContext !== null && currentContext.autoSha !== null && sha === currentContext.autoSha);
 }
 
 function signaled() {
@@ -87,153 +87,116 @@ function processNextPR(all) {
     let prContext = createPRContext(PRList.shift());
     console.log("Processing PR" + prContext.pr.number, prContext.pr.head.sha);
     currentContext = prContext;
-    populateMergeable(prContext);
-    populateStatuses(prContext);
-    populateReviews(prContext);
-    populateLabels(prContext);
+
+    let reviewsParams = commonParams();
+    reviewsParams.number = prContext.pr.number;
+    let reviewsPromise = getReviews(reviewsParams);
+
+    let statusParams = commonParams();
+    statusParams.ref = prContext.pr.head.sha;
+    let statusPromise = getStatuses(statusParams);
+
+    let mergeableParams = commonParams();
+    mergeableParams.number = prContext.pr.number;
+    let mergeablePromise = getMergeable(mergeableParams);
+
+    let labelsParams = commonParams();
+    labelsParams.number = prContext.pr.number;
+    let labelsPromise = getLabels(labelsParams);
+
+    Promise.all([reviewsPromise, statusPromise, mergeablePromise, labelsPromise]).then((results) => {
+            if (prContext.signaled)
+                return Promise.reject("signaled");
+
+            let reviews = results[0];
+            let statuses = results[1];
+            let mergeable = results[2];
+            let labels = results[3];
+
+            if ((mergeable !== true) || !approved(reviews) || !allChecksSuccessful(statuses) || mergedOrFailed(labels))
+                return Promise.reject("not ready for merging yet");
+
+            if (Config.dry_run)
+                return Promise.reject("dry run option");
+
+            startMerging(prContext);
+            return Promise.resolve("Start merging PR" + prContext.pr.number);
+    })
+    .catch((err) => {
+        console.error("Can't merge PR" + prContext.pr.number + ":", err);
+        processNextPR();
+    });
 }
 
 function createPRContext(pr) {
     let prContext = {};
     prContext.pr = pr;
-    prContext.checks = {};
-    prContext.reviews = {};
-    prContext.signaled = false;
-    prContext.aborted = false;
-    prContext.mergeable = false;
-    prContext.responses = 0;
-    prContext.mergedAutoSha = null;
+    prContext.autoSha = null;
     return prContext;
 }
 
-function prRequestParams() {
+function commonParams() {
     return {
         owner: Config.owner,
         repo: Config.repo
     };
 }
 
-function populateLabels(prContext) {
-    let params = prRequestParams();
-    params.number = prContext.pr.number;
-    console.log("Getting PR" + prContext.pr.number, "label list");
-    Github.authenticate(GithubAuthentication);
-    Github.issues.getLabels(params, (err, res) => {
-       if (err) {
-           console.error("Error! Could not get labels for PR" + params.number + ":", err);
-           return;
-       }
-       prContext.responses++;
-       console.log("PR" + params.number, "labels total:", res.data.length);
-       for (let label of res.data)
-          console.log("PR label name:", label.name);
-       prContext.labels = res.data;
-       mergeIfReady(prContext);
+function getLabels(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.issues.getIssueLabels(params, (err, res) => {
+           if (err) {
+               reject("Error! Could not get labels for PR" + params.number + ": " + err);
+               return;
+           }
+           console.log("PR" + params.number, "labels total:", res.data.length);
+           for (let label of res.data)
+              console.log("PR label name:", label.name);
+           resolve(res.data);
+        });
     });
 }
 
-function populateMergeable(prContext) {
-    let params = prRequestParams();
-    params.number = prContext.pr.number;
-    console.log("Getting PR" + prContext.pr.number, prContext.pr.head.sha);
-    Github.authenticate(GithubAuthentication);
-    Github.pullRequests.get(params, (err, pr) => {
-       if (err) {
-           console.error("Error! Could not get a single PR:", err);
-           prContext.aborted = true;
-           return;
-       }
-       prContext.responses++;
-       console.log("Got PR info", pr.data.number);
-       prContext.mergeable = pr.data.mergeable;
-       mergeIfReady(prContext);
+function getMergeable(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.pullRequests.get(params, (err, pr) => {
+           if (err) {
+               reject("Error! Could not get PR" + params.number + ":", err);
+               return;
+           }
+           console.log("Got PR" + pr.data.number);
+           resolve(pr.data.mergeable);
+        });
     });
 }
 
-function populateStatuses(prContext) {
-  let params = prRequestParams();
-  params.ref = prContext.pr.head.sha;
-  console.log("Getting statuses for PR" + prContext.pr.number, prContext.pr.head.sha);
-  Github.authenticate(GithubAuthentication);
-  Github.repos.getStatuses(params,
-      (err, res) => {
-        if (err) {
-            console.error("Error! Could not get statuses:", err);
-            prContext.aborted = true;
-            return;
-        }
-        console.log("Got", res.data.length, "statuses for PR" + prContext.pr.number, prContext.pr.head.sha);
-        prContext.responses++;
-        // Statuses are returned in reverse chronological order.
-        for (let st of res.data) {
-            console.log(st.context, st.state);
-            if (!(st.context in prContext.checks)) {
-                console.log("adding", st.context, st.state);
-                prContext.checks[st.context] = (st.state === 'success');
+function getReviews(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.pullRequests.getReviews(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not get reviews:" + err);
+                return;
             }
-        }
-
-        mergeIfReady(prContext);
-  });
-}
-
-function populateReviews(prContext) {
-    let params = prRequestParams();
-    params.number = prContext.pr.number;
-    console.log("Getting reviews for PR", prContext.pr.number, prContext.pr.head.sha);
-    Github.authenticate(GithubAuthentication);
-    Github.pullRequests.getReviews(params, (err, res) => {
-        if (err) {
-            console.error("Error! Could not get reviews:", err);
-            prContext.aborted = true;
-            return;
-        }
-        prContext.responses++;
-        console.log("Got", res.data.length, "reviews for PR" + prContext.pr.number, prContext.pr.head.sha);
-        for (let review of res.data) {
-            console.log(review.state, review.user.login);
-            // Reviews are returned in chronological order
-            if (review.state.toLowerCase() === "approved")
-                prContext.reviews[review.user.login] = true;
-        }
-        mergeIfReady(prContext);
+            console.log("Got", res.data.length, "reviews for PR" + params.number);
+            let reviews = {};
+            for (let review of res.data) {
+                console.log(review.state, review.user.login);
+                // Reviews are returned in chronological order
+                if (review.state.toLowerCase() === "approved")
+                    reviews[review.user.login] = true;
+            }
+            resolve(reviews);
+        });
     });
-}
-
-function mergeIfReady(prContext) {
-    if (prContext.signaled) {
-        console.log("Do not merge PR" + prContext.pr.number, "due to signaled");
-        processNextPR();
-        return;
-    }
-    if (prContext.aborted) {
-        console.log("Do not merge PR"+ prContext.pr.number, "due to aborted");
-        processNextPR();
-        return;
-    }
-    if (!checksReceived(prContext)) {
-        console.log("Do not yet merge PR" + prContext.pr.number + ",", "waiting data from Github");
-        return;
-    }
-
-    if (!readyForMerge(prContext)) {
-        console.log("Can not merge PR" + prContext.pr.number, ": not ready");
-        processNextPR();
-        return;
-    }
-
-    console.log("Will merge PR" + prContext.pr.number, prContext.pr.head.sha);
-    if (!Config.dry_run) {
-        mergePRintoAuto(prContext);
-        return;
-    }
-    processNextPR();
 }
 
 function getPRList() {
     PRList = [];
     Github.authenticate(GithubAuthentication);
-    Github.pullRequests.getAll(prRequestParams(), (err, res) => {
+    Github.pullRequests.getAll(commonParams(), (err, res) => {
         if (err) {
             console.error("Error! Could not get all PRs:", err);
             return;
@@ -248,40 +211,25 @@ function getPRList() {
     });
 }
 
-function checksReceived(prContext) {
-    return prContext.responses >= 4;
-}
-
-function readyForMerge(prContext) {
-    console.log("aborted:" + prContext.aborted, "signaled:"+ prContext.signaled,
-            "mergeable:" + isMergeable(prContext), "approved:" + isApproved(prContext), "checks ok:" + checksPassed(prContext),
-            "labels ok:" + labelsOk(prContext));
-    return (!prContext.aborted && !prContext.signaled && isMergeable(prContext) && isApproved(prContext) && checksPassed(prContext) && labelsOk(prContext));
-}
-
-function isMergeable(prContext) {
-    return prContext.mergeable === true;
-}
-
-function checkPropertyAllValues(obj, num) {
+function checkValues(obj, num) {
     if (obj === undefined || Object.keys(obj).length < num)
         return false;
     return (Object.values(obj).find((val) => { return val === false; })) === undefined;
 }
 
-function isApproved(prContext) {
-    return checkPropertyAllValues(prContext.reviews, Config.reviews_number);
+function approved(reviews) {
+    return checkValues(reviews, Config.reviews_number);
 }
 
-function checksPassed(prContext) {
-    return checkPropertyAllValues(prContext.checks, Config.checks_number);
+function allChecksSuccessful(checks) {
+    return checkValues(checks, Config.checks_number);
 }
 
-function labelsOk(prContext) {
-    if (prContext.labels === undefined)
-        return false;
-    return (prContext.labels.find((label) => {
-           return (label.name === "S-merged") || (label.name === "S-merge-failed"); })) === undefined;
+function mergedOrFailed(labels) {
+    if (labels === undefined)
+        return true;
+    return (labels.find((label) => {
+           return (label.name === "S-merged") || (label.name === "S-merge-failed"); })) !== undefined;
 }
 
 
@@ -398,10 +346,10 @@ function addLabels(params) {
   });
 }
 
-function mergeAutoIntoMaster(prContext) {
-    let params = prRequestParams();
-    assert(prContext.mergedAutoSha);
-    params.ref = prContext.mergedAutoSha;
+function finishMerging(prContext) {
+    let params = commonParams();
+    assert(prContext.autoSha);
+    params.ref = prContext.autoSha;
     let label = null;
     getStatuses(params)
         .then((checks) => {
@@ -410,27 +358,27 @@ function mergeAutoIntoMaster(prContext) {
                 return Promise.reject("Waiting for more auto_branch statuses completing for PR" + prContext.pr.number);
             }
             // some checks failed, drop our merge results
-            if (!checkPropertyAllValues(checks, Config.checks_number)) {
+            if (!checkValues(checks, Config.checks_number)) {
                 label = "S-merge-failed";
                 return Promise.reject("Some auto_branch checks failed for PR" + prContext.pr.number);
             }
             // merge master into auto_branch (ff merge).
-            let updateParams = prRequestParams();
+            let updateParams = commonParams();
             updateParams.ref = "heads/master";
-            updateParams.sha = prContext.mergedAutoSha;
+            updateParams.sha = prContext.autoSha;
             updateParams.force = false; // default (ensure we do ff merge).
             return updateReference(updateParams);
         })
         .then((sha) => {
              assert(sha === params.ref);
-             let prParams = prRequestParams();
+             let prParams = commonParams();
              prParams.state = "closed";
              prParams.number = prContext.pr.number.toString();
              return updatePR(prParams);
         })
         .then((state) => {
              assert(state === "closed");
-             let labelParams = prRequestParams();
+             let labelParams = commonParams();
              labelParams.number = prContext.pr.number.toString();
              labelParams.labels = [];
              labelParams.labels.push("S-merged");
@@ -439,14 +387,15 @@ function mergeAutoIntoMaster(prContext) {
         .then((result) => {
              assert(result === true);
              processNextPR();
+             return Promise.resolve(true);
          })
         .catch((err) => {
-            console.error("Error merging auto_branch(" + prContext.mergedAutoSha + ") into master:", err);
+            console.error("Error merging auto_branch(" + prContext.autoSha + ") into master:", err);
             if (label === null) {
                 processNextPR();
                 return Promise.resolve(true);
             } else {
-               let labelParams = prRequestParams();
+               let labelParams = commonParams();
                labelParams.number = prContext.pr.number.toString();
                labelParams.labels = [];
                labelParams.labels.push(label);
@@ -461,24 +410,25 @@ function mergeAutoIntoMaster(prContext) {
         });
 }
 
-function mergePRintoAuto(prContext) {
-    let getParams = prRequestParams();
+function startMerging(prContext) {
+    console.log("Start merging PR" + prContext.pr.number, prContext.pr.head.sha);
+    let getParams = commonParams();
     getParams.ref = "heads/master";
     let masterSha = null;
     getReference(getParams)
         .then((sha) => {
             masterSha = sha;
-            let params = prRequestParams();
+            let params = commonParams();
             params.ref = "pull/" + prContext.pr.number.toString() + "/merge";
             return getReference(params);
         })
         .then((sha) => {
-            let params = prRequestParams();
+            let params = commonParams();
             params.sha = sha;
             return getCommit(params);
         })
         .then((obj) => {
-            let params = prRequestParams();
+            let params = commonParams();
             params.tree = obj.treeSha;
             params.message = prContext.pr.title + endOfLine + prContext.pr.body + endOfLine + "(PR #" + prContext.pr.number.toString() + ")";
             params.parents = [];
@@ -486,14 +436,14 @@ function mergePRintoAuto(prContext) {
             return createCommit(params);
         })
         .then((sha) => {
-            let params = prRequestParams();
+            let params = commonParams();
             params.ref = "heads/" + Config.auto_branch;
             params.sha = sha;
             params.force = true;
             return updateReference(params);
         })
         .then((sha) => {
-            prContext.mergedAutoSha = sha;
+            prContext.autoSha = sha;
         })
         .catch((err) => {
             console.error("Error while merging PR("+prContext.pr.number.toString()+") into auto_branch:", err);
