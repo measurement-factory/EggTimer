@@ -15,15 +15,6 @@ const GithubAuthentication = { type: 'token', username: Config.github_username, 
 let PRList = [];
 let currentContext = null;
 
-// Webhook Handlers
-
-http.createServer((req, res) => {
-  WebhookHandler(req, res, () => {
-    res.statusCode = 404;
-    res.end('no such location');
-  });
-}).listen(Config.port);
-
 WebhookHandler.on('error', (err) => {
   console.error('Error:', err.message);
 });
@@ -54,9 +45,61 @@ WebhookHandler.on('status', (ev) => {
         processEvent();
 });
 
+// startup
+initContext();
 
 function merging(sha) {
     return (currentContext !== null && currentContext.autoSha !== null && sha === currentContext.autoSha);
+}
+
+function initContext() {
+    assert(currentContext === null);
+    currentContext = {};
+    let autoSha = null;
+    let getParams = commonParams();
+    getParams.ref = "heads/" + Config.auto_branch;
+
+    getReference(getParams)
+        .then((sha) => {
+            autoSha = sha;
+            let params = commonParams();
+            params.ref = sha;
+            return getCommitComments(params);
+        })
+        .then((comments) => {
+            if (comments.length !== 0) {
+                const mergingRegex = /^(Merging PR #)(\d+)$/;
+                let matched = comments[0].message.match(mergingRegex);
+                if (matched) {
+                    let params = commonParams();
+                    params.number = matched[2];
+                    return getPR(params);
+                }
+            }
+            return Promise.reject(true);
+        })
+        .then((pr) => {
+            currentContext = createPRContext(pr);
+            currentContext.autoSha = autoSha;
+            console.log("Found PR"+ pr.number + " in a merging state");
+            finishMerging(currentContext);
+            return;
+        })
+        .catch((err) => {
+            console.log("No PR is in the merging state: ", err);
+            currentContext = null;
+        })
+        .finally(() => {
+            console.log("Start listening on " + Config.port);
+            http.createServer((req, res) => {
+                 WebhookHandler(req, res, () => {
+                   res.statusCode = 404;
+                   res.end('no such location');
+                 });
+            }).listen(Config.port);
+            if (currentContext === null)
+                processNextPR(true);
+        });
 }
 
 function signaled() {
@@ -98,7 +141,7 @@ function processNextPR(all) {
 
     let mergeableParams = commonParams();
     mergeableParams.number = prContext.pr.number;
-    let mergeablePromise = getMergeable(mergeableParams);
+    let mergeablePromise = getPR(mergeableParams);
 
     let labelsParams = commonParams();
     labelsParams.number = prContext.pr.number;
@@ -110,7 +153,7 @@ function processNextPR(all) {
 
             let reviews = results[0];
             let statuses = results[1];
-            let mergeable = results[2];
+            let mergeable = results[2].mergeable;
             let labels = results[3];
 
             if ((mergeable !== true) || !approved(reviews) || !allChecksSuccessful(statuses) || mergedOrFailed(labels))
@@ -158,7 +201,7 @@ function getLabels(params) {
     });
 }
 
-function getMergeable(params) {
+function getPR(params) {
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
         Github.pullRequests.get(params, (err, pr) => {
@@ -167,7 +210,7 @@ function getMergeable(params) {
                return;
            }
            console.log("Got PR" + pr.data.number);
-           resolve(pr.data.mergeable);
+           resolve(pr.data);
         });
     });
 }
@@ -235,6 +278,20 @@ function mergedOrFailed(labels) {
 
 // =========== Auto branch ================
 
+function getCommitComments(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.repos.getCommitComments(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not get commit comments" + params.ref + ":" + err);
+                return;
+            }
+            console.log("Got commit comments", res.data.length, "for sha:", params.ref);
+            resolve(res.data);
+        });
+  });
+}
+
 function getStatuses(params) {
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
@@ -269,7 +326,7 @@ function getCommit(params) {
                 return;
             }
             console.log("Got commit, sha:", res.data.sha, "treeSha:", res.data.tree.sha);
-            resolve({sha: res.data.sha, treeSha: res.data.tree.sha});
+            resolve({sha: res.data.sha, treeSha: res.data.tree.sha, message: res.data.message});
         });
   });
 }
@@ -446,11 +503,8 @@ function startMerging(prContext) {
             prContext.autoSha = sha;
         })
         .catch((err) => {
-            console.error("Error while merging PR("+prContext.pr.number.toString()+") into auto_branch:", err);
+            console.error("Error while merging PR(" + prContext.pr.number.toString() + ") into auto_branch:", err);
             processNextPR();
         });
 }
-
-// startup
-processNextPR(true);
 
