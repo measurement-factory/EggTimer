@@ -69,7 +69,7 @@ function initContext() {
         .then((comments) => {
             if (comments.length !== 0) {
                 const mergingRegex = /^(Merging PR #)(\d+)$/;
-                let matched = comments[0].message.match(mergingRegex);
+                let matched = comments[0].body.match(mergingRegex);
                 if (matched) {
                     let params = commonParams();
                     params.number = matched[2];
@@ -175,6 +175,8 @@ function createPRContext(pr) {
     let prContext = {};
     prContext.pr = pr;
     prContext.autoSha = null;
+    prContext.signaled = false;
+    prContext.commentId = null;
     return prContext;
 }
 
@@ -277,6 +279,34 @@ function mergedOrFailed(labels) {
 
 
 // =========== Auto branch ================
+
+function deleteCommitComment(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.repos.deleteCommitComment(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not get commit comments" + params.ref + ":" + err);
+                return;
+            }
+            console.log("Got commit comments", res.data.length, "for sha:", params.ref);
+            resolve(res.data);
+        });
+  });
+}
+
+function createCommitComment(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.repos.createCommitComment(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not create commit comment " + err);
+                return;
+            }
+            console.log("Created commit comment", res.data.length, "for sha:", params.ref);
+            resolve(res.data);
+        });
+  });
+}
 
 function getCommitComments(params) {
     return new Promise( (resolve, reject) => {
@@ -404,11 +434,27 @@ function addLabels(params) {
 }
 
 function finishMerging(prContext) {
-    let params = commonParams();
+
+    let prParams = commonParams();
+    prParams.state = "closed";
+    prParams.number = prContext.pr.number.toString();
+    let prPromise = updatePR(prParams);
+
+    let labelParams = commonParams();
+    labelParams.number = prContext.pr.number.toString();
+    labelParams.labels = [];
+    labelParams.labels.push("S-merged");
+    let lblPromise = addLabels(labelParams);
+
+    let deleteCommentParams = commonParams();
+    deleteCommentParams.id = prContext.commentId;
+    let commPromise = deleteCommitComment(deleteCommentParams);
+
+    let statusParams = commonParams();
     assert(prContext.autoSha);
-    params.ref = prContext.autoSha;
-    let label = null;
-    getStatuses(params)
+    statusParams.ref = prContext.autoSha;
+    let errorLabel = null;
+    getStatuses(statusParams)
         .then((checks) => {
             // some checks not completed yet, will wait
             if (Object.keys(checks).length < Config.checks_number) {
@@ -416,7 +462,7 @@ function finishMerging(prContext) {
             }
             // some checks failed, drop our merge results
             if (!checkValues(checks, Config.checks_number)) {
-                label = "S-merge-failed";
+                errorLabel = "S-merge-failed";
                 return Promise.reject("Some auto_branch checks failed for PR" + prContext.pr.number);
             }
             // merge master into auto_branch (ff merge).
@@ -427,20 +473,17 @@ function finishMerging(prContext) {
             return updateReference(updateParams);
         })
         .then((sha) => {
-             assert(sha === params.ref);
-             let prParams = commonParams();
-             prParams.state = "closed";
-             prParams.number = prContext.pr.number.toString();
-             return updatePR(prParams);
+            assert(sha === statusParams.ref);
+            return Promise.all([prPromise, lblPromise, commPromise]);
         })
-        .then((state) => {
-             assert(state === "closed");
-             let labelParams = commonParams();
-             labelParams.number = prContext.pr.number.toString();
-             labelParams.labels = [];
-             labelParams.labels.push("S-merged");
-             return addLabels(labelParams);
-         })
+        .then((results) => {
+            let state = results[0];
+            let labelsUpdated = results[1];
+            let commentDeleted = results[2];
+            if (state === "closed" && labelsUpdated && commentDeleted)
+                return Promise.resolve(true);
+            return Promise.reject("cleanup failed");
+        })
         .then((result) => {
              assert(result === true);
              processNextPR();
@@ -448,22 +491,22 @@ function finishMerging(prContext) {
          })
         .catch((err) => {
             console.error("Error merging auto_branch(" + prContext.autoSha + ") into master:", err);
-            if (label === null) {
+            if (errorLabel === null) {
                 processNextPR();
                 return Promise.resolve(true);
             } else {
-               let labelParams = commonParams();
-               labelParams.number = prContext.pr.number.toString();
-               labelParams.labels = [];
-               labelParams.labels.push(label);
-               return addLabels(labelParams);
+               let params = commonParams();
+               params.number = prContext.pr.number.toString();
+               params.labels = [];
+               params.labels.push(errorLabel);
+               return addLabels(params);
             }
         })
         .then((result) => {
              assert(result === true);
         })
         .catch((err) => {
-            console.error("Error setting label " + label, err);
+            console.error("Error setting label " + errorLabel, err);
         });
 }
 
@@ -494,8 +537,15 @@ function startMerging(prContext) {
         })
         .then((sha) => {
             let params = commonParams();
-            params.ref = "heads/" + Config.auto_branch;
+            params.body = "Merging PR #" + prContext.pr.number.toString();
             params.sha = sha;
+            return createCommitComment(params);
+        })
+        .then((comment) => {
+            prContext.commentId = comment.id;
+            let params = commonParams();
+            params.ref = "heads/" + Config.auto_branch;
+            params.sha = comment.commit_id;
             params.force = true;
             return updateReference(params);
         })
