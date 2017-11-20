@@ -56,6 +56,7 @@ function initContext() {
     assert(currentContext === null);
     currentContext = {};
     let autoSha = null;
+    let mergingCommentId = null;
     let getParams = commonParams();
     getParams.ref = "heads/" + Config.auto_branch;
 
@@ -73,6 +74,7 @@ function initContext() {
                 if (matched) {
                     let params = commonParams();
                     params.number = matched[2];
+                    mergingCommentId = comments[0].id;
                     return getPR(params);
                 }
             }
@@ -81,6 +83,7 @@ function initContext() {
         .then((pr) => {
             currentContext = createPRContext(pr);
             currentContext.autoSha = autoSha;
+            currentContext.commentId = mergingCommentId;
             console.log("Found PR"+ pr.number + " in a merging state");
             finishMerging(currentContext);
             return;
@@ -285,10 +288,10 @@ function deleteCommitComment(params) {
         Github.authenticate(GithubAuthentication);
         Github.repos.deleteCommitComment(params, (err, res) => {
             if (err) {
-                reject("Error! Could not get commit comments" + params.ref + ":" + err);
+                reject("Error! Could not delete comment with id " + params.id + ":" + err);
                 return;
             }
-            console.log("Got commit comments", res.data.length, "for sha:", params.ref);
+            console.log("Deleted commit comment with id " + params.id);
             resolve(res.data);
         });
   });
@@ -313,7 +316,7 @@ function getCommitComments(params) {
         Github.authenticate(GithubAuthentication);
         Github.repos.getCommitComments(params, (err, res) => {
             if (err) {
-                reject("Error! Could not get commit comments" + params.ref + ":" + err);
+                reject("Error! Could not get commit comments " + params.ref + ":" + err);
                 return;
             }
             console.log("Got commit comments", res.data.length, "for sha:", params.ref);
