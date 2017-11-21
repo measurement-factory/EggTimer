@@ -286,7 +286,7 @@ function mergedOrFailed(labels) {
 function deleteCommitComment(params) {
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
-        Github.repos.deleteCommitComment(params, (err, res) => {
+        Github.repos.deleteCommitComment(params, (err) => {
             if (err) {
                 reject("Error! Could not delete comment with id " + params.id + ":" + err);
                 return;
@@ -437,22 +437,20 @@ function addLabels(params) {
 }
 
 function finishMerging(prContext) {
-
     let statusParams = commonParams();
     assert(prContext.autoSha);
     statusParams.ref = prContext.autoSha;
-    let errorLabel = null;
+    let errorLabel = "S-merge-failed";
     getStatuses(statusParams)
         .then((checks) => {
             // some checks not completed yet, will wait
             if (Object.keys(checks).length < Config.checks_number) {
+                errorLabel = null;
                 return Promise.reject("Waiting for more auto_branch statuses completing for PR" + prContext.pr.number);
             }
             // some checks failed, drop our merge results
-            if (!checkValues(checks, Config.checks_number)) {
-                errorLabel = "S-merge-failed";
+            if (!checkValues(checks, Config.checks_number))
                 return Promise.reject("Some auto_branch checks failed for PR" + prContext.pr.number);
-            }
             // merge master into auto_branch (ff merge).
             let updateParams = commonParams();
             updateParams.ref = "heads/master";
@@ -494,11 +492,10 @@ function finishMerging(prContext) {
              return Promise.resolve(true);
          })
         .catch((err) => {
-            console.error("Error merging auto_branch(" + prContext.autoSha + ") into master:", err);
             if (errorLabel === null) {
-                processNextPR();
                 return Promise.resolve(true);
             } else {
+               console.error("Error merging auto_branch(" + prContext.autoSha + ") into master:", err);
                let params = commonParams();
                params.number = prContext.pr.number.toString();
                params.labels = [];
