@@ -438,21 +438,6 @@ function addLabels(params) {
 
 function finishMerging(prContext) {
 
-    let prParams = commonParams();
-    prParams.state = "closed";
-    prParams.number = prContext.pr.number.toString();
-    let prPromise = updatePR(prParams);
-
-    let labelParams = commonParams();
-    labelParams.number = prContext.pr.number.toString();
-    labelParams.labels = [];
-    labelParams.labels.push("S-merged");
-    let lblPromise = addLabels(labelParams);
-
-    let deleteCommentParams = commonParams();
-    deleteCommentParams.id = prContext.commentId;
-    let commPromise = deleteCommitComment(deleteCommentParams);
-
     let statusParams = commonParams();
     assert(prContext.autoSha);
     statusParams.ref = prContext.autoSha;
@@ -477,6 +462,22 @@ function finishMerging(prContext) {
         })
         .then((sha) => {
             assert(sha === statusParams.ref);
+
+            let prParams = commonParams();
+            prParams.state = "closed";
+            prParams.number = prContext.pr.number.toString();
+            let prPromise = updatePR(prParams);
+
+            let labelParams = commonParams();
+            labelParams.number = prContext.pr.number.toString();
+            labelParams.labels = [];
+            labelParams.labels.push("S-merged");
+            let lblPromise = addLabels(labelParams);
+
+            let deleteCommentParams = commonParams();
+            deleteCommentParams.id = prContext.commentId;
+            let commPromise = deleteCommitComment(deleteCommentParams);
+
             return Promise.all([prPromise, lblPromise, commPromise]);
         })
         .then((results) => {
