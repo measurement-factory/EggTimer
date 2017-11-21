@@ -134,6 +134,14 @@ function processNextPR(all) {
     console.log("Processing PR" + prContext.pr.number, prContext.pr.head.sha);
     currentContext = prContext;
 
+    checkMergePreconditions(prContext);
+}
+
+function mergingTag(prNum) {
+    return "regs/tags/T-merging-PR" + prNum;
+}
+
+function checkMergePreconditions(prContext) {
     let reviewsParams = commonParams();
     reviewsParams.number = prContext.pr.number;
     let reviewsPromise = getReviews(reviewsParams);
@@ -159,19 +167,67 @@ function processNextPR(all) {
             let mergeable = results[2].mergeable;
             let labels = results[3];
 
-            if ((mergeable !== true) || !approved(reviews) || !allChecksSuccessful(statuses) || mergedOrFailed(labels))
+            if ((mergeable !== true) || !approved(reviews) || !allChecksSuccessful(statuses))
                 return Promise.reject("not ready for merging yet");
+
+            if (markedAsMerged(labels))
+                return Promise.reject("already merged");
+
+            if (markedAsFailed(labels))
+                console.log("PR" + prContext.pr.number + " previous merge was unsuccessful");
 
             if (Config.dry_run)
                 return Promise.reject("dry run option");
 
-            startMerging(prContext);
-            return Promise.resolve("Start merging PR" + prContext.pr.number);
+            checkBeforeStartMerging(prContext);
+            return Promise.resolve(true);
     })
     .catch((err) => {
         console.error("Can't merge PR" + prContext.pr.number + ":", err);
         processNextPR();
     });
+}
+
+function checkBeforeStartMerging(prContext) {
+   let refParams = commonParams();
+   refParams.ref = mergingTag(prContext.pr.number);
+   let tagTreeSha = null;
+   let tagSha = null;
+   console.log("Checking whether to skip due to a previous unsuccessful merge for PR" + prContext.pr.number);
+   getReference(refParams)
+       .then( (sha) => {
+           let params = commonParams();
+           params.sha = sha;
+           tagSha = sha;
+           return getCommit(params);
+        })
+        .then((obj) => {
+            let params = commonParams();
+            tagTreeSha = obj.treeSha;
+            params.ref = "pull/" + prContext.pr.number + "/merge";
+            return getReference(params);
+        })
+        .then((sha) => {
+            let params = commonParams();
+            params.sha = sha;
+            return getCommit(params);
+        })
+        .then((obj) => {
+            if (obj.treeSha !== tagTreeSha)
+                return Promise.reject("merge sha has changed");
+            let statusParams = commonParams();
+            statusParams.ref = tagSha;
+            return getStatuses(statusParams);
+        })
+        .then((checks) => {
+            if (!checkValues(checks, Config.checks_number))
+                return Promise.resolve("Some auto_branch checks failed for PR" + prContext.pr.number);
+            return Promise.reject("all checks succeeded");
+        })
+        .catch((msg) => {
+            console.log("Will merge:", msg);
+            startMerging(prContext);
+        });
 }
 
 function createPRContext(pr) {
@@ -273,11 +329,18 @@ function allChecksSuccessful(checks) {
     return checkValues(checks, Config.checks_number);
 }
 
-function mergedOrFailed(labels) {
+function markedAsFailed(labels) {
     if (labels === undefined)
-        return true;
+        return false;
     return (labels.find((label) => {
-           return (label.name === "S-merged") || (label.name === "S-merge-failed"); })) !== undefined;
+           return (label.name === "S-merge-failed"); })) !== undefined;
+}
+
+function markedAsMerged(labels) {
+    if (labels === undefined)
+        return false;
+    return (labels.find((label) => {
+           return (label.name === "S-merged"); })) !== undefined;
 }
 
 
@@ -387,6 +450,20 @@ function getReference(params) {
                 return;
             }
             console.log("Got master head sha:", res.data.object.sha);
+            resolve(res.data.object.sha);
+        });
+    });
+}
+
+function createReference(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.gitdata.createReference(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not create reference " + params.ref + " :" + err);
+                return;
+            }
+            console.log("Created reference " + res.data.ref);
             resolve(res.data.object.sha);
         });
     });
@@ -540,13 +617,24 @@ function startMerging(prContext) {
             let params = commonParams();
             params.body = "Merging PR #" + prContext.pr.number.toString();
             params.sha = sha;
-            return createCommitComment(params);
+            let commentPromise = createCommitComment(params);
+
+            let tagParams = commonParams();
+            tagParams.ref = mergingTag(prContext.pr.number);
+            params.sha = sha;
+            let tagPromise = createReference(tagParams);
+
+            return Promise.all([commentPromise, tagPromise]);
         })
-        .then((comment) => {
+        .then((results) => {
+            let comment = results[0];
+            let sha = results[1];
+            assert(sha === comment.commit_id);
+
             prContext.commentId = comment.id;
             let params = commonParams();
             params.ref = "heads/" + Config.auto_branch;
-            params.sha = comment.commit_id;
+            params.sha = sha;
             params.force = true;
             return updateReference(params);
         })
