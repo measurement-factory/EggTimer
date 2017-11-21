@@ -292,7 +292,7 @@ function deleteCommitComment(params) {
                 return;
             }
             console.log("Deleted commit comment with id " + params.id);
-            resolve(res.data);
+            resolve(true);
         });
   });
 }
@@ -305,7 +305,7 @@ function createCommitComment(params) {
                 reject("Error! Could not create commit comment " + err);
                 return;
             }
-            console.log("Created commit comment", res.data.length, "for sha:", params.ref);
+            console.log("Created commit comment", res.data.id, "for sha:", res.data.commit_id);
             resolve(res.data);
         });
   });
@@ -480,9 +480,9 @@ function finishMerging(prContext) {
             return Promise.all([prPromise, lblPromise, commPromise]);
         })
         .then((results) => {
-            let state = results[0];
-            let labelsUpdated = results[1];
-            let commentDeleted = results[2];
+            const state = results[0];
+            const labelsUpdated = results[1];
+            const commentDeleted = results[2];
             if (state === "closed" && labelsUpdated && commentDeleted)
                 return Promise.resolve(true);
             return Promise.reject("cleanup failed");
