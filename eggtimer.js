@@ -119,14 +119,15 @@ function processEvent() {
 }
 
 function processNextPR(all) {
+    const sig = signaled();
     currentContext = null;
     if (all) {
         getPRList();
         return;
-    } else if (PRList.length === 0 && !signaled()) {
+    } else if (PRList.length === 0 && !sig) {
         console.log("No more PRs to process.");
         return;
-    } else if (signaled()) {
+    } else if (sig) {
         getPRList();
         return;
     }
@@ -138,7 +139,7 @@ function processNextPR(all) {
 }
 
 function mergingTag(prNum) {
-    return "regs/tags/T-merging-PR" + prNum;
+    return "tags/T-merging-PR" + prNum;
 }
 
 function checkMergePreconditions(prContext) {
@@ -192,42 +193,53 @@ function checkBeforeStartMerging(prContext) {
    let refParams = commonParams();
    refParams.ref = mergingTag(prContext.pr.number);
    let tagTreeSha = null;
-   let tagSha = null;
+   prContext.tagSha = null;
    console.log("Checking whether to skip due to a previous unsuccessful merge for PR" + prContext.pr.number);
    getReference(refParams)
        .then( (sha) => {
            let params = commonParams();
            params.sha = sha;
-           tagSha = sha;
+           prContext.tagSha = sha;
+           let commitPromise = getCommit(params);
+
+           let prParams = commonParams();
+           prParams.number = prContext.pr.number;
+           let prPromise = getPR(prParams);
+
+           return Promise.all([commitPromise, prPromise]);
+       })
+       .then((results) => {
+           let commitObj = results[0];
+           let pr = results[1];
+           assert(pr.number = prContext.pr.number);
+           let params = commonParams();
+           tagTreeSha = commitObj.treeSha;
+           params.ref = "pull/" + prContext.pr.number + "/merge";
+           return getReference(params);
+       })
+       .then((sha) => {
+           let params = commonParams();
+           params.sha = sha;
            return getCommit(params);
-        })
-        .then((obj) => {
-            let params = commonParams();
-            tagTreeSha = obj.treeSha;
-            params.ref = "pull/" + prContext.pr.number + "/merge";
-            return getReference(params);
-        })
-        .then((sha) => {
-            let params = commonParams();
-            params.sha = sha;
-            return getCommit(params);
-        })
-        .then((obj) => {
-            if (obj.treeSha !== tagTreeSha)
-                return Promise.reject("merge sha has changed");
-            let statusParams = commonParams();
-            statusParams.ref = tagSha;
-            return getStatuses(statusParams);
-        })
-        .then((checks) => {
-            if (!checkValues(checks, Config.checks_number))
-                return Promise.resolve("Some auto_branch checks failed for PR" + prContext.pr.number);
-            return Promise.reject("all checks succeeded");
-        })
-        .catch((msg) => {
-            console.log("Will merge:", msg);
-            startMerging(prContext);
-        });
+       })
+       .then((obj) => {
+           if (obj.treeSha !== tagTreeSha)
+               return Promise.reject("merge sha has changed");
+           let statusParams = commonParams();
+           statusParams.ref = prContext.tagSha;
+           return getStatuses(statusParams);
+       })
+       .then((checks) => {
+           if (!checkValues(checks, Config.checks_number)) {
+               processNextPR();
+               return Promise.resolve("Some auto_branch checks failed for PR" + prContext.pr.number);
+           }
+           return Promise.reject("all checks succeeded");
+       })
+       .catch((msg) => {
+           console.log("Will merge:", msg);
+           startMerging(prContext);
+       });
 }
 
 function createPRContext(pr) {
@@ -236,6 +248,7 @@ function createPRContext(pr) {
     prContext.autoSha = null;
     prContext.signaled = false;
     prContext.commentId = null;
+    prContext.tagSha = null;
     return prContext;
 }
 
@@ -483,6 +496,20 @@ function updateReference(params) {
     });
 }
 
+function deleteReference(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.gitdata.deleteReference(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not delete reference: " + err);
+                return;
+            }
+            console.log("Deleted reference to sha:", res.data.object.sha);
+            resolve(true);
+       });
+    });
+}
+
 function updatePR(params) {
    return new Promise( (resolve, reject) => {
      Github.authenticate(GithubAuthentication);
@@ -553,7 +580,11 @@ function finishMerging(prContext) {
             deleteCommentParams.id = prContext.commentId;
             let commPromise = deleteCommitComment(deleteCommentParams);
 
-            return Promise.all([prPromise, lblPromise, commPromise]);
+            let deleteTagParams = commonParams();
+            deleteTagParams.ref = mergingTag(prContext.pr.number);
+            let tagPromise = deleteReference(deleteTagParams);
+
+            return Promise.all([prPromise, lblPromise, commPromise, tagPromise]);
         })
         .then((results) => {
             const state = results[0];
@@ -573,6 +604,7 @@ function finishMerging(prContext) {
                 return Promise.resolve(true);
             } else {
                console.error("Error merging auto_branch(" + prContext.autoSha + ") into master:", err);
+               processNextPR();
                let params = commonParams();
                params.number = prContext.pr.number.toString();
                params.labels = [];
@@ -620,10 +652,16 @@ function startMerging(prContext) {
             let commentPromise = createCommitComment(params);
 
             let tagParams = commonParams();
-            tagParams.ref = mergingTag(prContext.pr.number);
-            params.sha = sha;
-            let tagPromise = createReference(tagParams);
-
+            tagParams.sha = sha;
+            let tagPromise = null;
+            if (prContext.tagSha === null) {
+                tagParams.ref = "refs/" + mergingTag(prContext.pr.number);
+                tagPromise = createReference(tagParams);
+            } else {
+                tagParams.ref = mergingTag(prContext.pr.number);
+                tagParams.force = true;
+                tagPromise = updateReference(tagParams);
+            }
             return Promise.all([commentPromise, tagPromise]);
         })
         .then((results) => {
