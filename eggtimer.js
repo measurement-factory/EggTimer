@@ -11,6 +11,8 @@ const WebhookHandler = createHandler({ path: Config.github_webhook_path, secret:
 const Github = new nodeGithub({ version: "3.0.0" });
 const GithubAuthentication = { type: 'token', username: Config.github_username, token: Config.github_token };
 
+const MergeFailedLabel = "S-merge-failed";
+const MergedLabel = "S-merged";
 
 let PRList = [];
 let currentContext = null;
@@ -277,15 +279,24 @@ function getLabels(params) {
 
 function getPR(params) {
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.pullRequests.get(params, (err, pr) => {
-           if (err) {
-               reject("Error! Could not get PR" + params.number + ":", err);
-               return;
-           }
-           console.log("Got PR" + pr.data.number);
-           resolve(pr.data);
-        });
+            getMergeablePR(params, resolve, reject);
+    });
+}
+
+function getMergeablePR(params, resolve, reject) {
+    Github.authenticate(GithubAuthentication);
+    Github.pullRequests.get(params, (err, pr) => {
+        if (err) {
+            reject("Error! Could not get PR" + params.number + ":", err);
+            return;
+        }
+        const delay = 500;
+        if (pr.data.mergeable !== null) {
+            resolve(pr.data);
+            return;
+        }
+        console.log("PR" + params.number + ": Github still calculates mergeable flag, will retry in " + delay + " msec delay");
+        setTimeout(getMergeablePR, delay, params, resolve, reject);
     });
 }
 
@@ -346,14 +357,14 @@ function markedAsFailed(labels) {
     if (labels === undefined)
         return false;
     return (labels.find((label) => {
-           return (label.name === "S-merge-failed"); })) !== undefined;
+           return (label.name === MergeFailedLabel); })) !== undefined;
 }
 
 function markedAsMerged(labels) {
     if (labels === undefined)
         return false;
     return (labels.find((label) => {
-           return (label.name === "S-merged"); })) !== undefined;
+           return (label.name === MergedLabel); })) !== undefined;
 }
 
 
@@ -499,12 +510,12 @@ function updateReference(params) {
 function deleteReference(params) {
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
-        Github.gitdata.deleteReference(params, (err, res) => {
+        Github.gitdata.deleteReference(params, (err) => {
             if (err) {
                 reject("Error! Could not delete reference: " + err);
                 return;
             }
-            console.log("Deleted reference to sha:", res.data.object.sha);
+            console.log("Deleted reference to sha:", params.ref);
             resolve(true);
        });
     });
@@ -540,11 +551,22 @@ function addLabels(params) {
   });
 }
 
+function removeLabel(params) {
+   return new Promise( (resolve) => {
+     Github.authenticate(GithubAuthentication);
+     Github.issues.removeLabel(params, (err) => {
+        if (err)
+            console.log("Could not remove label " + params.name + " to PR" + params.number + ": " + err);
+        resolve(true);
+     });
+  });
+}
+
 function finishMerging(prContext) {
     let statusParams = commonParams();
     assert(prContext.autoSha);
     statusParams.ref = prContext.autoSha;
-    let errorLabel = "S-merge-failed";
+    let errorLabel = MergeFailedLabel;
     getStatuses(statusParams)
         .then((checks) => {
             // some checks not completed yet, will wait
@@ -570,11 +592,11 @@ function finishMerging(prContext) {
             prParams.number = prContext.pr.number.toString();
             let prPromise = updatePR(prParams);
 
-            let labelParams = commonParams();
-            labelParams.number = prContext.pr.number.toString();
-            labelParams.labels = [];
-            labelParams.labels.push("S-merged");
-            let lblPromise = addLabels(labelParams);
+            let addLabelParams = commonParams();
+            addLabelParams.number = prContext.pr.number.toString();
+            addLabelParams.labels = [];
+            addLabelParams.labels.push(MergedLabel);
+            let addLabelPromise = addLabels(addLabelParams);
 
             let deleteCommentParams = commonParams();
             deleteCommentParams.id = prContext.commentId;
@@ -584,7 +606,12 @@ function finishMerging(prContext) {
             deleteTagParams.ref = mergingTag(prContext.pr.number);
             let tagPromise = deleteReference(deleteTagParams);
 
-            return Promise.all([prPromise, lblPromise, commPromise, tagPromise]);
+            let delLabelParams = commonParams();
+            delLabelParams.number = prContext.pr.number.toString();
+            delLabelParams.name = MergeFailedLabel;
+            let delLabelPromise = removeLabel(delLabelParams);
+
+            return Promise.all([prPromise, addLabelPromise, commPromise, tagPromise, delLabelPromise]);
         })
         .then((results) => {
             const state = results[0];
