@@ -13,6 +13,8 @@ const GithubAuthentication = { type: 'token', username: Config.github_username, 
 
 const MergeFailedLabel = "S-merge-failed";
 const MergedLabel = "S-merged";
+const MergingTag = "T-merging-PR";
+const TagRegex = /(refs\/tags\/.*-PR)(\d+)$/;
 
 let PRList = [];
 let currentContext = null;
@@ -58,35 +60,39 @@ function initContext() {
     assert(currentContext === null);
     currentContext = {};
     let autoSha = null;
-    let mergingCommentId = null;
-    let getParams = commonParams();
-    getParams.ref = "heads/" + Config.auto_branch;
 
-    getReference(getParams)
-        .then((sha) => {
-            autoSha = sha;
-            let params = commonParams();
-            params.ref = sha;
-            return getCommitComments(params);
-        })
-        .then((comments) => {
-            if (comments.length !== 0) {
-                const mergingRegex = /^(Merging PR #)(\d+)$/;
-                let matched = comments[0].body.match(mergingRegex);
-                if (matched) {
-                    let params = commonParams();
-                    params.number = matched[2];
-                    mergingCommentId = comments[0].id;
-                    return getPR(params);
+    let autoParams = commonParams();
+    autoParams.ref = "heads/" + Config.auto_branch;
+    let autoPromise = getReference(autoParams);
+
+    let tagsParams = commonParams();
+    let tagsPromise = getTags(tagsParams);
+
+    Promise.all([autoPromise, tagsPromise])
+        .then( (results) => {
+            autoSha = results[0];
+            let tags = results[1];
+            let prNum = null;
+
+            tags.find( (tag) => {
+                if (tag.object.sha === autoSha) {
+                    let matched = tag.ref.match(TagRegex);
+                    if (matched)
+                        prNum = matched[2];
                 }
-            }
-            return Promise.reject(true);
+            });
+
+            if (prNum === null)
+                return Promise.reject(true);
+
+            let params = commonParams();
+            params.number = prNum;
+            return getPR(params);
         })
         .then((pr) => {
             currentContext = createPRContext(pr);
             currentContext.autoSha = autoSha;
-            currentContext.commentId = mergingCommentId;
-            console.log("Found PR"+ pr.number + " in a merging state");
+            console.log("Found PR" + pr.number + " in a merging state");
             finishMerging(currentContext);
             return;
         })
@@ -141,7 +147,7 @@ function processNextPR(all) {
 }
 
 function mergingTag(prNum) {
-    return "tags/T-merging-PR" + prNum;
+    return "tags/" + MergingTag + prNum;
 }
 
 function checkMergePreconditions(prContext) {
@@ -178,9 +184,6 @@ function checkMergePreconditions(prContext) {
 
             if (markedAsFailed(labels))
                 console.log("PR" + prContext.pr.number + " previous merge was unsuccessful");
-
-            if (Config.dry_run)
-                return Promise.reject("dry run option");
 
             checkBeforeStartMerging(prContext);
             return Promise.resolve(true);
@@ -240,6 +243,10 @@ function checkBeforeStartMerging(prContext) {
        })
        .catch((msg) => {
            console.log("Will merge:", msg);
+           if (Config.dry_run) {
+               console.log("PR" + prContext.pr.number + ": skip merging due to dry_run option");
+               return;
+           }
            startMerging(prContext);
        });
 }
@@ -249,7 +256,6 @@ function createPRContext(pr) {
     prContext.pr = pr;
     prContext.autoSha = null;
     prContext.signaled = false;
-    prContext.commentId = null;
     prContext.tagSha = null;
     return prContext;
 }
@@ -370,48 +376,6 @@ function markedAsMerged(labels) {
 
 // =========== Auto branch ================
 
-function deleteCommitComment(params) {
-    return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.repos.deleteCommitComment(params, (err) => {
-            if (err) {
-                reject("Error! Could not delete comment with id " + params.id + ":" + err);
-                return;
-            }
-            console.log("Deleted commit comment with id " + params.id);
-            resolve(true);
-        });
-  });
-}
-
-function createCommitComment(params) {
-    return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.repos.createCommitComment(params, (err, res) => {
-            if (err) {
-                reject("Error! Could not create commit comment " + err);
-                return;
-            }
-            console.log("Created commit comment", res.data.id, "for sha:", res.data.commit_id);
-            resolve(res.data);
-        });
-  });
-}
-
-function getCommitComments(params) {
-    return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.repos.getCommitComments(params, (err, res) => {
-            if (err) {
-                reject("Error! Could not get commit comments " + params.ref + ":" + err);
-                return;
-            }
-            console.log("Got commit comments", res.data.length, "for sha:", params.ref);
-            resolve(res.data);
-        });
-  });
-}
-
 function getStatuses(params) {
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
@@ -470,11 +434,25 @@ function getReference(params) {
         Github.authenticate(GithubAuthentication);
         Github.gitdata.getReference(params, (err, res) => {
             if (err) {
-                reject("Error! Could not get master head reference: " + err);
+                reject("Error! Could not get reference " + params.ref + " :" + err);
                 return;
             }
-            console.log("Got master head sha:", res.data.object.sha);
+            console.log("Got reference:", res.data.object.sha);
             resolve(res.data.object.sha);
+        });
+    });
+}
+
+function getTags(params) {
+    return new Promise( (resolve, reject) => {
+        Github.authenticate(GithubAuthentication);
+        Github.gitdata.getTags(params, (err, res) => {
+            if (err) {
+                reject("Error! Could not get tags: " + err);
+                return;
+            }
+            console.log("Got " + res.data.length + " tags");
+            resolve(res.data);
         });
     });
 }
@@ -598,10 +576,6 @@ function finishMerging(prContext) {
             addLabelParams.labels.push(MergedLabel);
             let addLabelPromise = addLabels(addLabelParams);
 
-            let deleteCommentParams = commonParams();
-            deleteCommentParams.id = prContext.commentId;
-            let commPromise = deleteCommitComment(deleteCommentParams);
-
             let deleteTagParams = commonParams();
             deleteTagParams.ref = mergingTag(prContext.pr.number);
             let tagPromise = deleteReference(deleteTagParams);
@@ -611,13 +585,12 @@ function finishMerging(prContext) {
             delLabelParams.name = MergeFailedLabel;
             let delLabelPromise = removeLabel(delLabelParams);
 
-            return Promise.all([prPromise, addLabelPromise, commPromise, tagPromise, delLabelPromise]);
+            return Promise.all([prPromise, addLabelPromise, tagPromise, delLabelPromise]);
         })
         .then((results) => {
             const state = results[0];
             const labelsUpdated = results[1];
-            const commentDeleted = results[2];
-            if (state === "closed" && labelsUpdated && commentDeleted)
+            if (state === "closed" && labelsUpdated)
                 return Promise.resolve(true);
             return Promise.reject("cleanup failed");
         })
@@ -676,7 +649,6 @@ function startMerging(prContext) {
             let params = commonParams();
             params.body = "Merging PR #" + prContext.pr.number.toString();
             params.sha = sha;
-            let commentPromise = createCommitComment(params);
 
             let tagParams = commonParams();
             tagParams.sha = sha;
@@ -689,14 +661,9 @@ function startMerging(prContext) {
                 tagParams.force = true;
                 tagPromise = updateReference(tagParams);
             }
-            return Promise.all([commentPromise, tagPromise]);
+            return tagPromise;
         })
-        .then((results) => {
-            let comment = results[0];
-            let sha = results[1];
-            assert(sha === comment.commit_id);
-
-            prContext.commentId = comment.id;
+        .then(sha => {
             let params = commonParams();
             params.ref = "heads/" + Config.auto_branch;
             params.sha = sha;
