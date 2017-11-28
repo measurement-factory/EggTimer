@@ -110,15 +110,11 @@ function allChecksSuccessful(checks) {
 }
 
 function markedAsFailed(labels) {
-    if (labels === undefined)
-        return false;
     return (labels.find((label) => {
            return (label.name === MergeFailedLabel); })) !== undefined;
 }
 
 function markedAsMerged(labels) {
-    if (labels === undefined)
-        return false;
     return (labels.find((label) => {
            return (label.name === MergedLabel); })) !== undefined;
 }
@@ -311,10 +307,10 @@ function checkBeforeStartMerging() {
    console.log(contextToStr(), "looking for previous failed merge attempts");
    getReference(refParams)
        .then( (obj) => {
-           let params = commonParams();
-           params.sha = obj.sha;
+           let commitParams = commonParams();
+           commitParams.sha = obj.sha;
            currentContext.tagSha = obj.sha;
-           let commitPromise = getCommit(params);
+           let commitPromise = getCommit(commitParams);
 
            let prParams = commonParams();
            prParams.number = currentContext.pr.number;
@@ -325,7 +321,7 @@ function checkBeforeStartMerging() {
        .then((results) => {
            let commitObj = results[0];
            let pr = results[1];
-           assert(pr.number = currentContext.pr.number);
+           assert(pr.number === currentContext.pr.number);
            let params = commonParams();
            tagTreeSha = commitObj.treeSha;
            params.ref = "pull/" + currentContext.pr.number + "/merge";
