@@ -2,14 +2,8 @@ const fs = require('fs');
 const http = require('http');
 const createHandler = require('github-webhook-handler');
 const nodeGithub = require('github');
-const Promise = require("bluebird");
 const assert = require('assert');
 const endOfLine = require('os').EOL;
-
-const Config = JSON.parse(fs.readFileSync('config.js'));
-const WebhookHandler = createHandler({ path: Config.github_webhook_path, secret: Config.github_webhook_secret });
-const Github = new nodeGithub({ version: "3.0.0" });
-const GithubAuthentication = { type: 'token', username: Config.github_username, token: Config.github_token };
 
 const MergeFailedLabel = "S-merge-failed";
 const AutoChecksFailedLabel = "S-autochecks-failed";
@@ -18,21 +12,101 @@ const MergingTag = "T-merging-PR";
 const TagRegex = /(refs\/tags\/.*-PR)(\d+)$/;
 
 let PRList = [];
-let currentContext = null;
+let Context = null;
 let Rerun = false;
 let Running = false;
+
+class ConfigOptions {
+    constructor(fname) {
+        const conf = JSON.parse(fs.readFileSync(fname));
+        this.githubUser = conf.github_username;
+        this.githubToken = conf.github_token;
+        this.githubWebhookPath = conf.github_webhook_path;
+        this.githubWebhookSecret = conf.github_webhook_secret;
+        this.repo = conf.repo;
+        this.port = conf.port;
+        this.owner = conf.owner;
+        this.autoBranch = conf.auto_branch;
+        this.dryRun = conf.dry_run;
+        this.checksNumber = conf.checks_number;
+        this.reviewsNumber = conf.reviews_number;
+
+        const allOptions = Object.values(this);
+        for (let v of allOptions) {
+            assert(v !==undefined );
+        }
+    }
+}
+
+class MergeContext {
+    constructor(pr, aSha, tSha) {
+        assert(Context === null);
+        this._pr = pr;
+        this.autoSha = (aSha === undefined) ? null : aSha;
+        this.tagSha = (tSha === undefined) ? null : tSha;
+        this._shaLimit = 6;
+    }
+
+    prNumber() { return this._pr.number; }
+
+    prHeadSha() { return this._pr.head.sha; }
+
+    prMessage() {
+       return this._pr.title + endOfLine + this._pr.body + endOfLine +
+           "(PR #" + this._pr.number + ")";
+    }
+
+    mergingTag() {
+        return "tags/" + MergingTag + this._pr.number;
+    }
+
+    mergePath() {
+       return "pull/" + this._pr.number + "/merge";
+    }
+
+    log(msg) {
+        console.log("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
+    }
+
+    toString() {
+        let str = "PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit);
+        if (this.autoSha !== null)
+            str += ", auto: " + this.autoSha.substr(0, this._shaLimit);
+        if (this.tagSha !== null)
+            str += ", tag: " + this.tagSha.substr(0, this._shaLimit);
+        return str + ")";
+    }
+}
+
+class RejectMsg {
+    constructor(msg, method, args) {
+        this.errMsg = msg;
+        this.method = (method === undefined) ? null : method;
+        this.args = (args === undefined) ? null : args;
+    }
+
+    toString()
+    {
+        let msg = this.errMsg;
+        if (this.method !== null)
+            msg += ", " + this.method;
+        if (this.args !== null)
+            msg += ", " + JSON.stringify(this.args);
+        return msg;
+    }
+}
+
+const Config = new ConfigOptions('config.js');
+
+const WebhookHandler = createHandler({ path: Config.githubWebhookPath, secret: Config.githubWebhookSecret });
+const Github = new nodeGithub({ version: "3.0.0" });
+const GithubAuthentication = { type: 'token', username: Config.githubUser, token: Config.githubToken };
+
 
 
 startup();
 
 // events
-
-http.createServer((req, res) => {
-    WebhookHandler(req, res, () => {
-        res.statusCode = 404;
-        res.end('no such location');
-    });
-}).listen(Config.port);
 
 WebhookHandler.on('error', (err) => {
    console.error('Error:', err.message);
@@ -63,7 +137,20 @@ WebhookHandler.on('status', (ev) => {
 // Bot core methods
 
 async function startup() {
-    await getPRList();
+    try {
+        await getPRList();
+    } catch (e) {
+        console.error(e);
+        return;
+    }
+
+    http.createServer((req, res) => {
+        WebhookHandler(req, res, () => {
+            res.statusCode = 404;
+            res.end('no such location');
+        });
+    }).listen(Config.port);
+
     run();
 }
 
@@ -83,9 +170,13 @@ async function run() {
             await getPRList();
             continue;
         }
-        console.log("running step...");
         stepRunning = await runStep();
-        currentContext = null;
+        Context = null;
+        // If an unexpected error occurred (e.g., connectivity problem),
+        // do not re-try immediately. TODO: distinguish such 'unexpected'
+        // errors from other situations.
+        if (!stepRunning)
+            await sleep(1000);
     }
     Running = false;
 }
@@ -95,19 +186,20 @@ async function run() {
 // or successfully merged).
 async function runStep() {
     try {
+        console.log("running step...");
         let ret = await checkTag();
         if (ret === 'start') {
             const checksOk = await checkMergePreconditions();
             if (!checksOk)
                 return false;
-            if (Config.dry_run) {
-                console.log(contextToStr(), "skip start merging due to dry_run option");
+            if (Config.dryRun) {
+                Context.log("skip start merging due to dry_run option");
                 return false;
             }
             return await startMerging();
         } else if (ret === 'continue') {
-            if (Config.dry_run) {
-                console.log(contextToStr(), "skip finish merging due to dry_run option");
+            if (Config.dryRun) {
+                Context.log("skip finish merging due to dry_run option");
                 return false;
             }
             if (await finishMerging())
@@ -122,32 +214,32 @@ async function runStep() {
             return false;
         }
     } catch (e) {
-        logError(e);
+        logError(e, "run step");
         return false;
     }
 }
 
 // Checks whether the current PR has merge tag.
 async function loadPRTag() {
-   assert(currentContext);
+   assert(Context);
    try {
-       currentContext.tagSha = await getReference(mergingTag(currentContext.pr.number));
+       Context.tagSha = await getReference(Context.mergingTag());
        return true;
    } catch (e) {
-       logError(e, "No tags found:");
+       logError(e, "No tags found");
        return false;
    }
 }
 
 // Loads 'being-in-merge' PR (i.e., with tag corresponding to auto_branch'), if exists.
 async function autoPR() {
-    const autoSha = await getReference("heads/" + Config.auto_branch);
+    const autoSha = await getReference(Config.autoBranch);
     let tags = null;
     try {
        tags = await getTags();
     } catch (e) {
-        logError(e, "No tags found:");
-        return null;
+        logError(e, "No tags found");
+        return false;
     }
 
     let prNum = null;
@@ -161,16 +253,14 @@ async function autoPR() {
 
     if (prNum === null) {
         console.log("No merging PR found.");
-        return null;
+        return false;
     }
 
     let autoPr = await getPR(prNum);
-    createContext(autoPr);
-    currentContext.autoSha = autoSha;
-    currentContext.tagSha = autoSha;
+    Context = new MergeContext(autoPr, autoSha, autoSha);
     // remove the loaded PR from the global list
-    PRList = PRList.filter((pr) => { return pr.number !== currentContext.pr.number; });
-    return prNum;
+    PRList = PRList.filter((pr) => { return pr.number !== Context.prNumber(); });
+    return true;
 }
 
 // Checks whether the current PR has 'merge tag' (i.e., merge in progress).
@@ -182,52 +272,51 @@ async function autoPR() {
 async function checkTag() {
     assert(PRList.length > 0);
 
-    const prNum = await autoPR();
-    if (prNum === null) {
-       createContext(PRList.shift());
+    if (!(await autoPR())) {
+       Context = new MergeContext(PRList.shift());
        if (!(await loadPRTag()))
            return 'start';
     }
 
-    assert(currentContext.tagSha);
+    assert(Context.tagSha);
 
-    let commitStatus = await getStatuses(currentContext.tagSha);
+    let commitStatus = await getStatuses(Context.tagSha);
 
     if (commitStatus === 'pending') {
-        console.log("PR" + prNum + ": waiting for more auto_branch statuses completing");
-        if (!Config.dry_run)
-            currentContext.autoSha = await updateReference("heads/" + Config.auto_branch, currentContext.tagSha, true);
+        Context.log("waiting for more auto_branch statuses completing");
+        if (!Config.dryRun)
+            Context.autoSha = await updateReference(Config.autoBranch, Context.tagSha, true);
         return 'wait';
     } else if ( commitStatus === 'success') {
-        console.log("PR" + prNum + " auto_branch checks succeeded");
-        currentContext.autoSha = await updateReference("heads/" + Config.auto_branch, currentContext.tagSha, true);
+        Context.log("auto_branch checks succeeded");
+        Context.autoSha = await updateReference(Config.autoBranch, Context.tagSha, true);
         return 'continue';
     } else {
-       assert(commitStatus === 'error');
-       const tagCommit = await getCommit(currentContext.tagSha);
-       const tagPr = await getPR(prNum); // to force Github refresh the PR's 'merge' commit
-       assert(tagPr.number === prNum);
-       const prMergeSha = await getReference("pull/" + prNum + "/merge");
-       const prCommit = await getCommit(prMergeSha);
+        assert(commitStatus === 'error');
+        const tagCommit = await getCommit(Context.tagSha);
+        const tagPr = await getPR(Context.prNumber()); // to force Github refresh the PR's 'merge' commit
+        assert(tagPr.number === Context.prNumber());
+        const prMergeSha = await getReference(Context.mergePath());
+        const prCommit = await getCommit(prMergeSha);
 
-       let ret = 'skip';
-       if (tagCommit.treeSha !== prCommit.treeSha) {
-           console.log("PR" + prNum + ": merge commit has changed since last failed attempt");
-           if (!Config.dry_run)
-               await deleteReference(mergingTag(prNum));
-           ret = 'start';
-       } else {
-           console.log("PR" + prNum + ": merge commit has not changed since last failed attempt");
-           if (!Config.dry_run)
-               await addLabel(AutoChecksFailedLabel);
-           ret = 'skip';
-       }
-       if (!Config.dry_run) {
-           // reset auto_branch to master's HEAD
-           const masterSha = await getReference("heads/master");
-           await updateReference("heads/" + Config.auto_branch, masterSha, true);
-       }
-       return ret;
+        let ret = 'skip';
+        if (tagCommit.treeSha !== prCommit.treeSha) {
+            Context.log("merge commit has changed since last failed attempt");
+            if (!Config.dryRun)
+                await deleteReference(Context.mergingTag());
+            ret = 'start';
+        } else {
+            Context.log("merge commit has not changed since last failed attempt");
+            if (!Config.dryRun)
+                await addLabel(AutoChecksFailedLabel);
+            ret = 'skip';
+        }
+        if (!Config.dryRun) {
+            // reset auto_branch to master's HEAD
+            const masterSha = await getReference("heads/master");
+            await updateReference(Config.autoBranch, masterSha, true);
+        }
+        return ret;
     }
 }
 
@@ -235,39 +324,40 @@ async function checkTag() {
 // Also forbids merging the already merged PR (marked with label) or
 // if was interrupted by an event ('Rerun' is true).
 async function checkMergePreconditions() {
-    assert(currentContext);
+    assert(Context);
     try {
+        Context.log("checking merge preconditions...");
 
-        const pr = await getPR(currentContext.pr.number);
+        const pr = await getPR(Context.prNumber());
         if (!pr.mergeable) {
-            console.log(contextToStr(), "not mergeable yet.");
+            Context.log("not mergeable yet.");
             return false;
         }
 
-        const approved = await getReviews(currentContext.pr.number);
+        const approved = await getReviews(Context.prNumber());
         if (!approved) {
-            console.log(contextToStr(), "not approved yet.");
+            Context.log("not approved yet.");
             return false;
         }
 
-        const statusOk = await getStatuses(currentContext.pr.head.sha);
+        const statusOk = await getStatuses(Context.prHeadSha());
         if (!statusOk) {
-            console.log(contextToStr(), "statuses not succeeded.");
+            Context.log("statuses not succeeded.");
             return false;
         }
 
-        const labels = await getLabels(currentContext.pr.number);
+        const labels = await getLabels(Context.prNumber());
         if (markedAsMerged(labels)) {
-            console.log(contextToStr(), "already merged");
+            Context.log("already merged");
             return false;
         }
 
         if (Rerun) {
-            console.log(contextToStr(), "rerun");
+            Context.log("rerun");
             return false;
         }
     } catch (err) {
-        logError(err, "will not merge because:");
+        logError(err, "Will not merge because");
         return false;
     }
 
@@ -276,92 +366,78 @@ async function checkMergePreconditions() {
 
 // Creates a 'merge commit' and adjusts auto_branch.
 async function startMerging() {
-    assert(currentContext);
-    console.log(contextToStr(), "start merging");
+    assert(Context);
     try
     {
+        Context.log("start merging...");
+
         const masterSha = await getReference("heads/master");
 
-        const mergeSha = await getReference("pull/" + currentContext.pr.number.toString() + "/merge");
+        const mergeSha = await getReference("pull/" + Context.prNumber() + "/merge");
 
         const mergeCommit = await getCommit(mergeSha);
 
-        const message = currentContext.pr.title + endOfLine + currentContext.pr.body +
-                        endOfLine + "(PR #" + currentContext.pr.number.toString() + ")";
-        const tempCommitSha = await createCommit(mergeCommit.treeSha, message, [masterSha]);
+        const tempCommitSha = await createCommit(mergeCommit.treeSha, Context.prMessage(), [masterSha]);
 
-        currentContext.tagSha = await createReference(tempCommitSha, "refs/" + mergingTag(currentContext.pr.number));
+        Context.tagSha = await createReference(tempCommitSha, "refs/" + Context.mergingTag());
 
-        currentContext.autoSha = await updateReference("heads/" + Config.auto_branch, currentContext.tagSha, true);
+        Context.autoSha = await updateReference(Config.autoBranch, Context.tagSha, true);
         return true;
     } catch (err) {
-        logError(err, "Could not start merging auto_branch into master. Details:");
+        logError(err, "Could not start merging auto_branch into master");
         return false;
     }
 }
 
 // Does 'ff' merge master into auto_branch.
 async function finishMerging() {
-    assert(currentContext);
-    assert(currentContext.autoSha);
-    console.log(contextToStr(), "finish merging");
+    assert(Context);
+    assert(Context.autoSha);
     try {
+        Context.log("finish merging...");
         // ensure we do ff merge
-        await updateReference("heads/master", currentContext.autoSha, false);
+        await updateReference("heads/master", Context.autoSha, false);
         return true;
     } catch (err) {
-        logError(err, "Could not merge auto_branch into master. Details:");
+        logError(err, "Could not merge auto_branch into master");
         return false;
     }
 }
 
 async function cleanupOnSuccess() {
    try {
-       await updatePR(currentContext.pr.number, 'closed');
+       Context.log("cleanup on success...");
+       await updatePR(Context.prNumber(), 'closed');
        const allLabels = await addLabel(MergedLabel);
-       await deleteReference(mergingTag(currentContext.pr.number));
+       await deleteReference(Context.mergingTag());
        await cleanupLabels(allLabels);
        const masterSha = await getReference("heads/master");
-       await updateReference("heads/" + Config.auto_branch, masterSha, true);
+       await updateReference(Config.autoBranch, masterSha, true);
    } catch (err) {
-       logError(err, "Could not cleanup on success. Details:");
+       logError(err, "Could not cleanup on success");
    }
 }
 
 async function cleanupOnError() {
    try {
-       await deleteReference(mergingTag(currentContext.pr.number));
-       const allLabels = getLabels(currentContext.pr.number);
+       Context.log("cleanup on error...");
+       await deleteReference(Context.mergingTag());
+       const allLabels = getLabels(Context.prNumber());
        if (!allLabels.find((label) => { return (label.name === MergeFailedLabel); })) {
            await addLabel(MergeFailedLabel);
        }
        const masterSha = await getReference("heads/master");
-       await updateReference("heads/" + Config.auto_branch, masterSha, true);
+       await updateReference(Config.autoBranch, masterSha, true);
    } catch (err) {
-       logError(err, "Could not cleanup on error. Details:");
+       logError(err, "Could not cleanup on error");
    }
 }
 
 
 // helper methods
 
-function createContext(pr) {
-    assert(currentContext === null);
-    currentContext = {};
-    currentContext.pr = pr;
-    currentContext.autoSha = null;
-    currentContext.tagSha = null;
-}
-
-function mergingTag(prNum) {
-    return "tags/" + MergingTag + prNum;
-}
-
-function commonParams() {
-    return {
-        owner: Config.owner,
-        repo: Config.repo
-    };
+function sleep(msec) {
+    return new Promise((resolve) => setTimeout(resolve, msec));
 }
 
 function checkValues(obj, num) {
@@ -371,11 +447,11 @@ function checkValues(obj, num) {
 }
 
 function fullyApproved(reviews) {
-    return checkValues(reviews, Config.reviews_number);
+    return checkValues(reviews, Config.reviewsNumber);
 }
 
 function allChecksSuccessful(checks) {
-    return checkValues(checks, Config.checks_number);
+    return checkValues(checks, Config.checksNumber);
 }
 
 function markedAsMerged(labels) {
@@ -383,44 +459,30 @@ function markedAsMerged(labels) {
            return (label.name === MergedLabel); })) !== undefined;
 }
 
-function rejectArg(msg, method = null, params = null) {
-    return {errMsg: msg, method: method, args: params};
+function logError(err, details) {
+    let msg = "";
+    if (Context !== null)
+        msg += Context.toString() + " ";
+    if (details !== undefined)
+        msg += details + ": ";
+    msg += err.toString();
+    console.error(msg);
 }
 
-function rejectStr(context)
-{
-    let msg = context.errMsg;
-    if (context.method !== null)
-        msg += ", " + context.method;
-    if (context.args !== null)
-        msg += ", " + JSON.stringify(context.args);
-    return msg;
-}
-
-function contextToStr()
-{
-    const n = 6; // limit displaying sha length
-    let str = "PR" + currentContext.pr.number + "(head: " + currentContext.pr.head.sha.substr(0, n);
-    if (currentContext.autoSha !== null)
-        str += ", auto: " + currentContext.autoSha.substr(0, n);
-    if (currentContext.tagSha !== null)
-        str += ", tag: " + currentContext.tagSha.substr(0, n);
-    return str + ")";
-}
-
-function logError(err, msg) {
-    if ('errMsg' in err)
-        console.error(contextToStr(), msg, rejectStr(err));
-    else
-        console.error(err);
-}
-
-function logResolved(method, params, result) {
+function logApiResult(method, params, result) {
     console.log(method, "succeeded, params:", JSON.stringify(params), "result:", JSON.stringify(result));
 }
 
 
 // Promisificated node-github wrappers
+
+// common parameters for all API calls
+function commonParams() {
+    return {
+        owner: Config.owner,
+        repo: Config.repo
+    };
+}
 
 function getPRList() {
     PRList = [];
@@ -429,11 +491,11 @@ function getPRList() {
         Github.authenticate(GithubAuthentication);
         Github.pullRequests.getAll(params, (err, res) => {
             if (err) {
-                reject(rejectArg(err, getPRList.name, params));
+                reject(new RejectMsg(err, getPRList.name, params));
                 return;
             }
             const result = res.data.length;
-            logResolved(getPRList.name, params, result);
+            logApiResult(getPRList.name, params, result);
             PRList = res.data;
             resolve(true);
         });
@@ -447,40 +509,44 @@ function getLabels(prNum) {
         Github.authenticate(GithubAuthentication);
         Github.issues.getIssueLabels(params, (err, res) => {
            if (err) {
-               reject(rejectArg(err, getLabels.name, params));
+               reject(new RejectMsg(err, getLabels.name, params));
                return;
            }
            const result = {labels: res.data.length};
-           logResolved(getLabels.name, params, result);
+           logApiResult(getLabels.name, params, result);
            resolve(res.data);
         });
     });
 }
 
-function getPR(prNum) {
+async function getPR(prNum) {
+    const max = 64 * 1000 + 1; // ~2 min. overall
+    for (let d = 1000; d < max; d *= 2) {
+        let pr = await requestPR(prNum);
+        if (pr.mergeable !== null)
+            return pr;
+        console.log("PR" + prNum + ": Github still caluclates mergeable status. Will retry in " + (d/1000) + " seconds");
+        await sleep(d);
+    }
+    return Promise.reject(new RejectMsg("Github could not calculate mergeable status",
+                getPR.name, {pr: prNum}));
+}
+
+function requestPR(prNum) {
     let params = commonParams();
     params.number = prNum;
     return new Promise( (resolve, reject) => {
-            getMergeablePR(params, resolve, reject);
-    });
-}
-
-function getMergeablePR(params, resolve, reject) {
-    Github.authenticate(GithubAuthentication);
-    Github.pullRequests.get(params, (err, pr) => {
-        if (err) {
-            reject(rejectArg(err, getMergeablePR.name, params));
-            return;
-        }
-        const delay = 1000;
-        if (pr.data.mergeable !== null) {
-            logResolved(getMergeablePR.name, params, {mergeable: pr.data.mergeable});
+        Github.authenticate(GithubAuthentication);
+        Github.pullRequests.get(params, (err, pr) => {
+            if (err) {
+                reject(new RejectMsg(err, requestPR.name, params));
+                return;
+            }
+            const result = {mergeable: pr.data.mergeable};
+            logApiResult(requestPR.name, params, result);
             resolve(pr.data);
-            return;
-        }
-        console.log("PR" + params.number + ": Github still calculates mergeable flag, will retry in " + delay + " msec delay");
-        setTimeout(getMergeablePR, delay, params, resolve, reject);
-    });
+       });
+   });
 }
 
 function getReviews(prNum) {
@@ -490,7 +556,7 @@ function getReviews(prNum) {
         Github.authenticate(GithubAuthentication);
         Github.pullRequests.getReviews(params, (err, res) => {
             if (err) {
-                reject(rejectArg(err, getReviews.name, params));
+                reject(new RejectMsg(err, getReviews.name, params));
                 return;
             }
             let reviews = {};
@@ -500,7 +566,7 @@ function getReviews(prNum) {
                     reviews[review.user.login] = true;
             }
             const result = fullyApproved(reviews);
-            logResolved(getReviews.name, params, {approved: result});
+            logApiResult(getReviews.name, params, {approved: result});
             resolve(result);
         });
     });
@@ -513,7 +579,7 @@ function getStatuses(ref) {
         Github.authenticate(GithubAuthentication);
         Github.repos.getStatuses(params, (err, res) => {
             if (err) {
-                reject(rejectArg(err, getStatuses.name, params));
+                reject(new RejectMsg(err, getStatuses.name, params));
                 return;
             }
             // Statuses are returned in reverse chronological order.
@@ -525,11 +591,11 @@ function getStatuses(ref) {
                 }
             }
             let result = null;
-            if (Object.keys(checks).length < Config.checks_number)
+            if (Object.keys(checks).length < Config.checksNumber)
                 result = 'pending';
             else
                 result = allChecksSuccessful(checks) ? 'success' : 'error';
-            logResolved(getStatuses.name, params, {checks: result});
+            logApiResult(getStatuses.name, params, {checks: result});
             resolve(result);
        });
     });
@@ -542,11 +608,11 @@ function getCommit(sha) {
         Github.authenticate(GithubAuthentication);
         Github.gitdata.getCommit(params, (err, res) => {
             if (err) {
-                reject(rejectArg(err, getCommit.name, params));
+                reject(new RejectMsg(err, getCommit.name, params));
                 return;
             }
             const result = {sha: res.data.sha, treeSha: res.data.tree.sha, message: res.data.message};
-            logResolved(getCommit.name, params, result);
+            logApiResult(getCommit.name, params, result);
             resolve(result);
         });
   });
@@ -561,11 +627,11 @@ function createCommit(treeSha, message, parents) {
         Github.authenticate(GithubAuthentication);
         Github.gitdata.createCommit(params, (err, res) => {
             if (err) {
-                reject(rejectArg(err, createCommit.name, params));
+                reject(new RejectMsg(err, createCommit.name, params));
                 return;
             }
             const result = {sha: res.data.sha};
-            logResolved(createCommit.name, params, result);
+            logApiResult(createCommit.name, params, result);
             resolve(res.data.sha);
         });
   });
@@ -578,11 +644,11 @@ function getReference(ref) {
         Github.authenticate(GithubAuthentication);
         Github.gitdata.getReference(params, (err, res) => {
             if (err) {
-                reject(rejectArg(err, getReference.name, params));
+                reject(new RejectMsg(err, getReference.name, params));
                 return;
             }
             const result = {ref: res.data.ref, sha: res.data.object.sha};
-            logResolved(getReference.name, params, result);
+            logApiResult(getReference.name, params, result);
             resolve(res.data.object.sha);
         });
     });
@@ -594,10 +660,10 @@ function getTags() {
         Github.authenticate(GithubAuthentication);
         Github.gitdata.getTags(params, (err, res) => {
             if (err) {
-                reject(rejectArg(err, getTags.name, params));
+                reject(new RejectMsg(err, getTags.name, params));
                 return;
             }
-            logResolved(getTags.name, params, {tags: res.data.length});
+            logApiResult(getTags.name, params, {tags: res.data.length});
             resolve(res.data);
         });
     });
@@ -611,11 +677,11 @@ function createReference(sha, ref) {
         Github.authenticate(GithubAuthentication);
         Github.gitdata.createReference(params, (err, res) => {
             if (err) {
-                reject(rejectArg(err, createReference.name, params));
+                reject(new RejectMsg(err, createReference.name, params));
                 return;
             }
             const result = {ref: res.data.ref, sha: res.data.object.sha};
-            logResolved(createReference.name, params, result);
+            logApiResult(createReference.name, params, result);
             resolve(res.data.object.sha);
         });
     });
@@ -630,11 +696,11 @@ function updateReference(ref, sha, force) {
         Github.authenticate(GithubAuthentication);
         Github.gitdata.updateReference(params, (err, res) => {
             if (err) {
-                reject(rejectArg(err, updateReference.name, params));
+                reject(new RejectMsg(err, updateReference.name, params));
                 return;
             }
             const result = {ref: res.data.ref, sha: res.data.object.sha};
-            logResolved(updateReference.name, params, result);
+            logApiResult(updateReference.name, params, result);
             resolve(res.data.object.sha);
        });
     });
@@ -647,11 +713,11 @@ function deleteReference(ref) {
         Github.authenticate(GithubAuthentication);
         Github.gitdata.deleteReference(params, (err) => {
             if (err) {
-                reject(rejectArg(err, deleteReference.name, params));
+                reject(new RejectMsg(err, deleteReference.name, params));
                 return;
             }
             const result = {deleted: true};
-            logResolved(deleteReference.name, params, result);
+            logApiResult(deleteReference.name, params, result);
             resolve(result);
        });
     });
@@ -665,20 +731,20 @@ function updatePR(prNum, state) {
      Github.authenticate(GithubAuthentication);
      Github.pullRequests.update(params, (err, res) => {
         if (err) {
-            reject(rejectArg(err, updatePR.name, params));
+            reject(new RejectMsg(err, updatePR.name, params));
             return;
         }
         const result = {state: res.data.state};
-        logResolved(updatePR.name, params, result);
+        logApiResult(updatePR.name, params, result);
         resolve(result);
      });
   });
 }
 
 async function addLabel(label) {
-    assert(currentContext);
+    assert(Context);
     let params = commonParams();
-    params.number = currentContext.pr.number;
+    params.number = Context.prNumber();
     params.labels = [];
     params.labels.push(label);
     return await addLabels(params);
@@ -686,7 +752,7 @@ async function addLabel(label) {
 
 async function cleanupLabels(allLabels) {
     let params = commonParams();
-    params.number = currentContext.pr.number;
+    params.number = Context.prNumber();
 
     if (allLabels.find((label) => { return (label.name === MergeFailedLabel); })) {
         params.name = MergeFailedLabel;
@@ -704,11 +770,11 @@ function addLabels(params) {
      Github.authenticate(GithubAuthentication);
      Github.issues.addLabels(params, (err, res) => {
         if (err) {
-            reject(rejectArg(err, addLabels.name, params));
+            reject(new RejectMsg(err, addLabels.name, params));
             return;
         }
         const result = {added: true};
-        logResolved(addLabels.name, params, result);
+        logApiResult(addLabels.name, params, result);
         resolve(res.data);
      });
   });
@@ -719,11 +785,11 @@ function removeLabel(params) {
      Github.authenticate(GithubAuthentication);
      Github.issues.removeLabel(params, (err) => {
          if (err) {
-            reject(rejectArg(err, addLabels.name, params));
+            reject(new RejectMsg(err, addLabels.name, params));
             return;
          }
          const result = {removed: true};
-         logResolved(removeLabel.name, params, result);
+         logApiResult(removeLabel.name, params, result);
          resolve(result);
      });
   });
