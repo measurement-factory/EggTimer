@@ -137,12 +137,8 @@ WebhookHandler.on('status', (ev) => {
 // Bot core methods
 
 async function startup() {
-    try {
-        await getPRList();
-    } catch (e) {
-        console.error(e);
+    if (!(await getPRList()))
         return;
-    }
 
     http.createServer((req, res) => {
         WebhookHandler(req, res, () => {
@@ -166,8 +162,11 @@ async function run() {
     let stepRunning = false;
     while (!stepRunning && (PRList.length > 0 || Rerun)) {
         if (Rerun) {
-            Rerun = false;
-            await getPRList();
+            if (!(await getPRList())) {
+                await sleep(1000);
+            } else {
+                Rerun = false;
+            }
             continue;
         }
         stepRunning = await runStep();
@@ -484,7 +483,17 @@ function commonParams() {
     };
 }
 
-function getPRList() {
+async function getPRList() {
+    try {
+        await requestPRList();
+        return true;
+    } catch (e) {
+        console.error(e);
+        return false;
+    }
+}
+
+function requestPRList() {
     PRList = [];
     let params = commonParams();
     return new Promise( (resolve, reject) => {
