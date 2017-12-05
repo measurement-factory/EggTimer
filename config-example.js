@@ -8,6 +8,6 @@
     "owner": "an-owner",
     "dry_run": false,
     "auto_branch": "auto_branch",
-    "checks_number": 1
+    "reviews_number": 1
 }
 

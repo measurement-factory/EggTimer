@@ -28,7 +28,6 @@ class ConfigOptions {
         this._owner = conf.owner;
         this._autoBranch = conf.auto_branch;
         this._dryRun = conf.dry_run;
-        this._checksNumber = conf.checks_number;
         this._reviewsNumber = conf.reviews_number;
 
         const allOptions = Object.values(this);
@@ -46,7 +45,6 @@ class ConfigOptions {
     owner() { return this._owner; }
     autoBranch() { return this._autoBranch; }
     dryRun() { return this._dryRun; }
-    checksNumber() { return this._checksNumber; }
     reviewsNumber() { return this._reviewsNumber; }
 }
 
@@ -59,18 +57,25 @@ class MergeContext {
         this._shaLimit = 6;
     }
 
+    refreshPR(pr) {
+        assert(pr.number === this._pr.number);
+        this._pr = pr;
+    }
+
     prNumber() { return this._pr.number; }
 
     prHeadSha() { return this._pr.head.sha; }
 
     prMessage() {
-       return this._pr.title + endOfLine + this._pr.body + endOfLine +
-           "(PR #" + this._pr.number + ")";
+        return this._pr.title + endOfLine + this._pr.body + endOfLine +
+            "(PR #" + this._pr.number + ")";
     }
 
-    mergingTag() {
-        return "tags/" + MergingTag + this._pr.number;
-    }
+    prMergeable() { return this._pr.mergeable; }
+
+    prBaseBranch() { return this._pr.base.ref; }
+
+    mergingTag() { return "tags/" + MergingTag + this._pr.number; }
 
     tagsConsistent() {
         if (this.autoSha !== null)
@@ -78,9 +83,7 @@ class MergeContext {
         return true;
     }
 
-    mergePath() {
-       return "pull/" + this._pr.number + "/merge";
-    }
+    mergePath() { return "pull/" + this._pr.number + "/merge"; }
 
     log(msg) {
         console.log("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
@@ -163,7 +166,6 @@ async function startup() {
             res.end('no such location');
         });
     }).listen(Config.port());
-    Rerun = true;
     run();
 }
 
@@ -176,10 +178,13 @@ async function run() {
         return;
     }
     Running = true;
-    const ok = await runStep();
+    let stepOk = false;
+    do {
+        Rerun = false;
+        stepOk = await runStep();
+    } while (Rerun);
     Running = false;
-    // !ok means an unexpected error occurred.
-    if (!ok) {
+    if (!stepOk) {
         const min = 10;
         console.error("run: previous step finished unexpectedly. Automatically re-try in " + min + " minutes.");
         setTimeout(run, min * 60 * 1000);
@@ -194,12 +199,8 @@ async function runStep() {
     let errors = 0;
     try {
         console.log("running step...");
-
-        while (PRList.length > 0 || Rerun) {
-           if (Rerun) {
-              await getPRList();
-              Rerun = false;
-           }
+        await getPRList();
+        while (PRList.length > 0) {
            Context = null;
            await selectPR(); // picks one element from PRList
            total++;
@@ -295,7 +296,7 @@ async function autoPR() {
     let prNum = null;
     tags.find( (tag) => {
         if (tag.object.sha === autoSha) {
-            let matched = tag.ref.match(TagRegex);
+            const matched = tag.ref.match(TagRegex);
             if (matched)
                 prNum = matched[2];
         }
@@ -306,7 +307,7 @@ async function autoPR() {
         return false;
     }
 
-    let autoPr = await getPR(prNum);
+    const autoPr = await getPR(prNum);
     Context = new MergeContext(autoPr, autoSha, autoSha);
     // remove the loaded PR from the global list
     PRList = PRList.filter((pr) => { return pr.number !== Context.prNumber(); });
@@ -328,7 +329,9 @@ async function selectPR() {
 async function checkTag() {
     assert(Context.tagSha);
 
-    let commitStatus = await getStatuses(Context.tagSha);
+    const contexts = await getProtectedBranchRequiredStatusChecks(Context.prBaseBranch());
+
+    const commitStatus = await getStatuses(Context.tagSha, contexts);
 
     if (commitStatus === 'pending') {
         Context.log("waiting for more auto_branch statuses completing");
@@ -377,18 +380,24 @@ async function checkMergePreconditions() {
         Context.log("checking merge preconditions...");
 
         const pr = await getPR(Context.prNumber());
-        if (!pr.mergeable) {
+        Context.refreshPR(pr);
+
+        if (!Context.prMergeable()) {
             Context.log("not mergeable yet.");
             return false;
         }
 
-        const approved = await getReviews(Context.prNumber());
+        const collaborators = await getCollaborators();
+        const pushCollaborators = collaborators.filter((c) => { return c.permissions.push === true; });
+        const approved = await getReviews(Context.prNumber(), pushCollaborators);
         if (!approved) {
             Context.log("not approved yet.");
             return false;
         }
 
-        const statusOk = await getStatuses(Context.prHeadSha());
+        const contexts = await getProtectedBranchRequiredStatusChecks(Context.prBaseBranch());
+
+        const statusOk = await getStatuses(Context.prHeadSha(), contexts);
         if (!statusOk) {
             Context.log("statuses not succeeded.");
             return false;
@@ -477,7 +486,7 @@ async function cleanupOnError() {
    try {
        Context.log("cleanup on error...");
        await deleteReference(Context.mergingTag());
-       const allLabels = getLabels(Context.prNumber());
+       const allLabels = await getLabels(Context.prNumber());
        if (!allLabels.find((label) => { return (label.name === MergeFailedLabel); })) {
            await addLabel(MergeFailedLabel);
        }
@@ -499,14 +508,6 @@ function checkValues(obj, num) {
     if (obj === undefined || Object.keys(obj).length < num)
         return false;
     return (Object.values(obj).find((val) => { return val === false; })) === undefined;
-}
-
-function fullyApproved(reviews) {
-    return checkValues(reviews, Config.reviewsNumber());
-}
-
-function allChecksSuccessful(checks) {
-    return checkValues(checks, Config.checksNumber());
 }
 
 function markedAsMerged(labels) {
@@ -543,7 +544,7 @@ function commonParams() {
 
 function getPRList() {
     PRList = [];
-    let params = commonParams();
+    const params = commonParams();
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
         Github.pullRequests.getAll(params, (err, res) => {
@@ -579,7 +580,7 @@ function getLabels(prNum) {
 async function getPR(prNum) {
     const max = 64 * 1000 + 1; // ~2 min. overall
     for (let d = 1000; d < max; d *= 2) {
-        let pr = await requestPR(prNum);
+        const pr = await requestPR(prNum);
         if (pr.mergeable !== null)
             return pr;
         console.log("PR" + prNum + ": Github still caluclates mergeable status. Will retry in " + (d/1000) + " seconds");
@@ -606,7 +607,7 @@ function requestPR(prNum) {
    });
 }
 
-function getReviews(prNum) {
+function getReviews(prNum, pushCollaborators) {
     let params = commonParams();
     params.number = prNum;
     return new Promise( (resolve, reject) => {
@@ -616,20 +617,29 @@ function getReviews(prNum) {
                 reject(new RejectMsg(err, getReviews.name, params));
                 return;
             }
+
             let reviews = {};
             for (let review of res.data) {
                 // Reviews are returned in chronological order
                 if (review.state.toLowerCase() === "approved")
                     reviews[review.user.login] = true;
             }
-            const result = fullyApproved(reviews);
+
+            let approvals = 0;
+            for (let pushCollaborator of pushCollaborators) {
+                 if (Object.keys(reviews).find((key) => { return key === pushCollaborator.login; })) {
+                     approvals++;
+                 }
+            }
+
+            const result = (approvals >= Config.reviewsNumber());
             logApiResult(getReviews.name, params, {approved: result});
             resolve(result);
         });
     });
 }
 
-function getStatuses(ref) {
+function getStatuses(ref, requiredContexts) {
     let params = commonParams();
     params.ref = ref;
     return new Promise( (resolve, reject) => {
@@ -647,11 +657,17 @@ function getStatuses(ref) {
                         checks[st.context] = (st.state === 'success');
                 }
             }
+
             let result = null;
-            if (Object.keys(checks).length < Config.checksNumber())
-                result = 'pending';
-            else
-                result = allChecksSuccessful(checks) ? 'success' : 'error';
+            for (let requiredContext of requiredContexts) {
+                 if (Object.keys(checks).find((key) => { return key === requiredContext; }) === undefined) {
+                    result = 'pending';
+                    break;
+                 }
+            }
+            if (!result)
+                result = checkValues(checks, requiredContexts.length) ? 'success' : 'error';
+
             logApiResult(getStatuses.name, params, {checks: result});
             resolve(result);
        });
@@ -850,5 +866,38 @@ function removeLabel(params) {
          resolve(result);
      });
   });
+}
+
+function getProtectedBranchRequiredStatusChecks(branch) {
+    let params = commonParams();
+    params.branch = branch;
+    return new Promise( (resolve, reject) => {
+      Github.authenticate(GithubAuthentication);
+      Github.repos.getProtectedBranchRequiredStatusChecks(params, (err, res) => {
+          if (err) {
+             reject(new RejectMsg(err, getProtectedBranchRequiredStatusChecks.name, params));
+             return;
+          }
+          const result = {checks: res.data.contexts.length};
+          logApiResult(getProtectedBranchRequiredStatusChecks.name, params, result);
+          resolve(res.data.contexts);
+      });
+    });
+}
+
+function getCollaborators() {
+    const params = commonParams();
+    return new Promise( (resolve, reject) => {
+      Github.authenticate(GithubAuthentication);
+      Github.repos.getCollaborators(params, (err, res) => {
+          if (err) {
+             reject(new RejectMsg(err, getCollaborators.name, params));
+             return;
+          }
+          const result = {collaborators: res.data.length};
+          logApiResult(getCollaborators.name, params, result);
+          resolve(res.data);
+      });
+    });
 }
 
