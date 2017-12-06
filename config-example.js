@@ -7,7 +7,7 @@
     "repo": "a-repo",
     "owner": "an-owner",
     "dry_run": false,
-    "auto_branch": "auto_branch",
+    "auto_branch": "heads/auto_branch",
     "reviews_number": 1
 }
 
