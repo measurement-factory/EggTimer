@@ -11,8 +11,6 @@ const MergedLabel = "S-merged";
 const MergingTag = "T-merging-PR";
 const TagRegex = /(refs\/tags\/.*-PR)(\d+)$/;
 
-let PRList = [];
-let Context = null;
 let Rerun = false;
 let Running = false;
 
@@ -48,20 +46,255 @@ class ConfigOptions {
     reviewsNumber() { return this._reviewsNumber; }
 }
 
+const Config = new ConfigOptions('config.js');
+const WebhookHandler = createHandler({ path: Config.githubWebhookPath(), secret: Config.githubWebhookSecret() });
+const Github = new nodeGithub({ version: "3.0.0" });
+const GithubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
+
+
+// Processing a single PR
 class MergeContext {
+
     constructor(pr, aSha, tSha) {
+        // Whether the PR is in-process (auto checks are running)
+        // or not (skipped due to failed checks or successfully merged).
+        this.inMerge = null;
+        // true when FF merge master into auto_branch fails
+        this.mergeFailed = false;
+
         this._pr = pr;
-        this.autoSha = (aSha === undefined) ? null : aSha;
-        this.tagSha = (tSha === undefined) ? null : tSha;
+        this._autoSha = (aSha === undefined) ? null : aSha;
+        this._tagSha = (tSha === undefined) ? null : tSha;
         this._shaLimit = 6;
     }
 
-    refreshPR(pr) {
+    // Advances the PR towards merge.
+    async process() {
+        try {
+            assert(this.tagsConsistent());
+            this.inMerge = false;
+
+            if (!this._autoSha)
+                await this._loadTag();
+
+            let checkTagResult = null;
+            if (this._tagSha)
+                checkTagResult = await this._checkTag();
+
+            if (!checkTagResult || checkTagResult === 'start') {
+                if (!(await this._checkMergePreconditions())) {
+                    return true;
+                }
+                if (Config.dryRun()) {
+                    this._log("skip start merging due to dry_run option");
+                    return true;
+                }
+                await this._startMerging();
+                // merging started successfully
+                this.inMerge = true;
+                return true;
+            }
+
+            assert(checkTagResult);
+
+            if (checkTagResult === 'continue') {
+                if (Config.dryRun()) {
+                    this._log("skip finish merging due to dry_run option");
+                    return true;
+                }
+                await this._finishMerging();
+                await this._cleanup();
+                // merging finished successfully
+                return true;
+            } else if (checkTagResult === 'wait') {
+                // still waiting for auto checks
+                this.inMerge = true;
+                return true;
+            } else {
+                // skip this PR
+                assert(checkTagResult === 'skip');
+                return true;
+            }
+        } catch (err) {
+            this._logError(err, "MergeContext.process");
+            await this._cleanupOnError();
+            return false;
+        }
+    }
+
+    // Checks whether the current PR has merge tag.
+    async _loadTag() {
+       try {
+           this._tagSha = await getReference(this.mergingTag());
+           return true;
+       } catch (e) {
+           if (e.notFound()) {
+               this._log(this.mergingTag() + " not found");
+               return false;
+           }
+           throw e;
+       }
+    }
+
+    // Checks whether the current PR has 'merge tag' (i.e., merge in progress).
+    // Returns one of:
+    // 'start': the tag does not exist or is stale; should start merging from scratch.
+    // 'wait': the tag tests are in progress; should wait for their completion.
+    // 'continue': the tag tests completed with success; should finish merging.
+    // 'skip': the tag tests failed, the tag is no stale; do not process this PR.
+    async _checkTag() {
+        assert(this._tagSha);
+
+        const contexts = await getProtectedBranchRequiredStatusChecks(this.prBaseBranch());
+
+        const commitStatus = await getStatuses(this._tagSha, contexts);
+
+        if (commitStatus === 'pending') {
+            this._log("waiting for more auto_branch statuses completing");
+            if (!Config.dryRun())
+                this._autoSha = await updateReference(Config.autoBranch(), this._tagSha, true);
+            return 'wait';
+        } else if ( commitStatus === 'success') {
+            this._log("auto_branch checks succeeded");
+            this._autoSha = await updateReference(Config.autoBranch(), this._tagSha, true);
+            return 'continue';
+        } else {
+            assert(commitStatus === 'error');
+            const tagCommit = await getCommit(this._tagSha);
+            const tagPr = await getPR(this.number(), true); // to force Github refresh the PR's 'merge' commit
+            assert(tagPr.number === this.number());
+            const prMergeSha = await getReference(this.mergePath());
+            const prCommit = await getCommit(prMergeSha);
+
+            let ret = 'skip';
+            if (tagCommit.treeSha !== prCommit.treeSha) {
+                this._log("merge commit has changed since last failed attempt");
+                if (!Config.dryRun())
+                    await deleteReference(this.mergingTag());
+                ret = 'start';
+            } else {
+                this._log("merge commit has not changed since last failed attempt");
+                if (!Config.dryRun())
+                    await addLabel(AutoChecksFailedLabel, this.number());
+                ret = 'skip';
+            }
+            return ret;
+        }
+    }
+
+    // Checks whether the PR is ready for merge (all PR lamps are 'green').
+    // Also forbids merging the already merged PR (marked with label) or
+    // if was interrupted by an event ('Rerun' is true).
+    async _checkMergePreconditions() {
+        this._log("checking merge preconditions...");
+
+        const pr = await getPR(this.number(), true);
+        this._refresh(pr);
+
+        if (!this.prMergeable()) {
+            this._log("not mergeable yet.");
+            return false;
+        }
+
+        const collaborators = await getCollaborators();
+        const pushCollaborators = collaborators.filter((c) => { return c.permissions.push === true; });
+        const approved = await getReviews(this.number(), pushCollaborators);
+        if (!approved) {
+            this._log("not approved yet.");
+            return false;
+        }
+
+        const contexts = await getProtectedBranchRequiredStatusChecks(this.prBaseBranch());
+
+        const statusOk = await getStatuses(this.prHeadSha(), contexts);
+        if (!statusOk) {
+            this._log("statuses not succeeded.");
+            return false;
+        }
+
+        const labels = await getLabels(this.number());
+        if ((labels.find((label) => { return (label.name === MergedLabel); })) !== undefined) {
+            this._log("already merged");
+            return false;
+        }
+
+        if (Rerun) {
+            this._log("rerun");
+            return false;
+        }
+
+        return true;
+    }
+
+    // Creates a 'merge commit' and adjusts auto_branch.
+    async _startMerging() {
+        this._log("start merging...");
+        const masterSha = await getReference("heads/master");
+        const mergeSha = await getReference("pull/" + this.number() + "/merge");
+        const mergeCommit = await getCommit(mergeSha);
+        const tempCommitSha = await createCommit(mergeCommit.treeSha, this.prMessage(), [masterSha]);
+        this._tagSha = await createReference(tempCommitSha, "refs/" + this.mergingTag());
+        this._autoSha = await updateReference(Config.autoBranch(), this._tagSha, true);
+    }
+
+    // Does 'ff' merge master into auto_branch.
+    async _finishMerging() {
+        assert(this._autoSha);
+        this._log("finish merging...");
+        // ensure we do ff merge
+        try {
+            await updateReference("heads/master", this._autoSha, false);
+        } catch (e) {
+            if (e.unprocessable()) {
+                this._log("FF merge failed");
+                this.mergeFailed = true;
+            }
+            throw e;
+        }
+    }
+
+    async _cleanup() {
+        this._log("cleanup...");
+        await updatePR(this.number(), 'closed');
+        const allLabels = await addLabel(MergedLabel, this.number());
+        await deleteReference(this.mergingTag());
+        await cleanupLabels(allLabels, this.number());
+        const masterSha = await getReference("heads/master");
+        await updateReference(Config.autoBranch(), masterSha, true);
+    }
+
+    // does not throw
+    async _cleanupOnError() {
+        if (this === null)
+            return;
+        this._log("cleanup on error...");
+        // delete merging tag, if exists
+        try {
+            await deleteReference(this.mergingTag());
+        } catch (e) {
+            if (e.notFound())
+                this._log(this.mergingTag() + " not found");
+            else
+                this._logError(e, "cleanupOnError");
+        }
+
+        // set labels, if needed
+        try {
+            const allLabels = await getLabels(this.number());
+            if (!allLabels.find((label) => { return (label.name === MergeFailedLabel); })) {
+                await addLabel(MergeFailedLabel, this.number());
+            }
+        } catch (e) {
+            this._logError(e, "cleanupOnError");
+        }
+    }
+
+    _refresh(pr) {
         assert(pr.number === this._pr.number);
         this._pr = pr;
     }
 
-    prNumber() { return this._pr.number; }
+    number() { return this._pr.number; }
 
     prHeadSha() { return this._pr.head.sha; }
 
@@ -79,75 +312,136 @@ class MergeContext {
     mergingTag() { return "tags/" + MergingTag + this._pr.number; }
 
     tagsConsistent() {
-        if (this.autoSha !== null)
-            return this.autoSha === this.tagSha;
+        if (this._autoSha !== null)
+            return this._autoSha === this._tagSha;
         return true;
     }
 
     mergePath() { return "pull/" + this._pr.number + "/merge"; }
 
-    log(msg) {
+    _log(msg) {
         console.log("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
+    }
+
+    _logError(err, details) {
+        let msg = this.toString() + " ";
+        if (details !== undefined)
+            msg += details + ": ";
+        msg += err.toString();
+        if ('stack' in err)
+            msg += err.stack.toString();
+        console.error(msg);
     }
 
     toString() {
         let str = "PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit);
-        if (this.autoSha !== null)
-            str += ", auto: " + this.autoSha.substr(0, this._shaLimit);
-        if (this.tagSha !== null)
-            str += ", tag: " + this.tagSha.substr(0, this._shaLimit);
+        if (this._autoSha !== null)
+            str += ", auto: " + this._autoSha.substr(0, this._shaLimit);
+        if (this._tagSha !== null)
+            str += ", tag: " + this._tagSha.substr(0, this._shaLimit);
         return str + ")";
     }
-}
+} // MergeContext
 
-class ErrorContext {
-    constructor(err, method, args) {
-        // The underlying rejection may be a specific Promise.reject() or
-        // be caused by a Github API error, so 'err' contains either
-        // an error string or the entire API error object.
-        this._err = err;
-        this._method = (method === undefined) ? null : method;
-        this._args = (args === undefined) ? null : args;
+
+// Gets PR list from Github and processes some/all PRs from this list.
+class MergeStep {
+
+    constructor() {
+        this.prList = [];
+        this.total = 0;
+        this.errors = 0;
     }
 
-    // 404 (Not found)
-    notFound() {
-        if ('code' in this._err)
-            return this._err.code === 404;
-        // We treat our local(non-API) promise rejections as
-        // if the requested resource was not 'not found'.
-        // TODO: rework if this simple approach does not work.
+    // Gets PR list from Github and processes them one by one.
+    // Returns if either all PRs have been processed(merged or skipped), or
+    // there is a PR still-in-merge.
+    async run() {
+        try {
+            console.log("Running merge step...");
+            this.prList = await getPRList();
+            let mergeContext = await this._current();
+            if (!mergeContext)
+                mergeContext = await this._next();
+            while (mergeContext) {
+                this.total++;
+                if (!(await mergeContext.process()))
+                    this.errors++;
+                if (mergeContext.inMerge)
+                    break;
+                // Should re-run when ff merge failed(e.g., master changed)
+                // and this is the last PR in the list.
+                if (mergeContext.mergeFailed && !this.prList.length)
+                    Rerun = true;
+                mergeContext = await this._next();
+            }
+        } catch (e) {
+            console.error(e.stack);
+            return false;
+        }
+        this.logStatistics();
         return true;
     }
 
-    // 422 (unprocessable entity)
-    unprocessable() {
-        if ('code' in this._err)
-            return this._err.code === 422;
-        return false;
+    async _next() {
+        if (!this.prList.length)
+            return null;
+        return new MergeContext(this.prList.shift());
     }
 
-    toString() {
-        let msg = "";
-        if (this._method !== null)
-            msg = this._method;
-        if (msg.length)
-            msg += ", ";
-        msg += "Error: " + JSON.stringify(this._err);
-        if (this._args !== null)
-            msg += ", params: " + JSON.stringify(this._args);
-        return msg;
+    // Loads 'being-in-merge' PR, if exists (PR with tag corresponding to auto_branch').
+    async _current() {
+        if (!this.prList.length)
+            return null;
+        const autoSha = await getReference(Config.autoBranch());
+        let tags = null;
+        try {
+           tags = await getTags();
+        } catch (e) {
+            if (e.notFound()) {
+                console.log("No tags found");
+                return null;
+            }
+            throw e;
+        }
+
+        let prNum = null;
+        tags.find( (tag) => {
+            if (tag.object.sha === autoSha) {
+                const matched = tag.ref.match(TagRegex);
+                if (matched)
+                    prNum = matched[2];
+            }
+        });
+
+        if (prNum === null) {
+            console.log("No merging PR found.");
+            return null;
+        }
+
+        let autoPr = null;
+        try {
+            autoPr = await getPR(prNum, false);
+        } catch (e) {
+            if (e.notFound()) {
+                console.log("PR" + prNum + " not found");
+                return null;
+            }
+            throw e;
+        }
+        let context = new MergeContext(autoPr, autoSha, autoSha);
+        const prevLen = this.prList.length;
+        // remove the loaded PR from the global list
+        this.prList = this.prList.filter((pr) => { return pr.number !== context.number(); });
+        assert(prevLen - 1 === this.prList.length);
+        return context;
     }
-}
 
-const Config = new ConfigOptions('config.js');
+    logStatistics() {
+        console.log("Merge step finished. Total PRs processed: " + this.total + ", skipped due to errors: " + this.errors);
+    }
 
-const WebhookHandler = createHandler({ path: Config.githubWebhookPath(), secret: Config.githubWebhookSecret() });
-const Github = new nodeGithub({ version: "3.0.0" });
-const GithubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
-
-
-startup();
+} // MergeStep
 
 // events
 
@@ -186,8 +480,10 @@ async function startup() {
             res.end('no such location');
         });
     }).listen(Config.port());
-    run();
+    await run();
 }
+
+startup();
 
 async function run() {
     console.log("running...");
@@ -200,7 +496,8 @@ async function run() {
     let stepOk = false;
     do {
         Rerun = false;
-        stepOk = await runStep();
+        let step = new MergeStep();
+        stepOk = await step.run();
     } while (Rerun);
     Running = false;
 
@@ -211,357 +508,59 @@ async function run() {
     }
 }
 
-// Gets PR list from Github and selects a PR for processing.
-// the selected PR is still in-process or not(is skipped due to an error
-// or successfully merged).
-// Requests and process all open PRs.
-// Re-loads PR list from Github, if interrupted.
-async function runStep() {
-    let total = 0;
-    let errors = 0;
-    try {
-        console.log("running step...");
-        await getPRList();
-        while (PRList.length > 0) {
-           await selectPR(); // picks one element from PRList
-           total++;
-           try {
-               if (await processPR())
-                   break;
-           } catch (err) {
-               errors++;
-               logError(err, "processPR");
-               await cleanupOnError();
-           } finally {
-               Context = null;
-           }
-        }
-    } catch (e) {
-        logError(e, "run step");
-        return false;
-    } finally {
-        Context = null;
-        console.log("runStep: Total PRs processed: " + total + ", skipped due to errors: " + errors);
+
+// Promisificated node-github wrappers
+
+// An error context for promisificated wrappers.
+class ErrorContext {
+    constructor(err, method, args) {
+        // The underlying rejection may be a bot-specific Promise.reject() or
+        // be caused by a Github API error, so 'err' contains either
+        // an error string or the entire API error object.
+        this._err = err;
+        this._method = (method === undefined) ? null : method;
+        this._args = (args === undefined) ? null : args;
     }
-    return true;
-}
 
-// Advances the current PR towards merge.
-// Returns whether the current PR is still in-process or not, meaning
-// that it was skipped due to failed checks or successfully merged.
-async function processPR() {
-    assert(Context && Context.tagsConsistent());
-    if (!Context.autoSha)
-        await loadPRTag();
-
-    let checkTagResult = null;
-    if (Context.tagSha)
-        checkTagResult = await checkTag();
-
-    if (!checkTagResult || checkTagResult === 'start') {
-        if (!(await checkMergePreconditions()))
-            return false;
-        if (Config.dryRun()) {
-            Context.log("skip start merging due to dry_run option");
-            return false;
-        }
-        await startMerging();
-        // merging started successfully
+    // 404 (Not found)
+    notFound() {
+        if ('code' in this._err)
+            return this._err.code === 404;
+        // We treat our local(non-API) promise rejections as
+        // if the requested resource was 'not found'.
+        // TODO: rework if this simple approach does not work.
         return true;
     }
 
-    assert(checkTagResult);
-
-    if (checkTagResult === 'continue') {
-        if (Config.dryRun()) {
-            Context.log("skip finish merging due to dry_run option");
-            return false;
-        }
-        await finishMerging();
-        await cleanup();
-        // merging finished successfully
-        return false;
-    } else if (checkTagResult === 'wait') {
-        // still waiting for auto checks
-        return true;
-    } else {
-        // skip this PR
-        assert(checkTagResult === 'skip');
-        return false;
-    }
-}
-
-// Checks whether the current PR has merge tag.
-async function loadPRTag() {
-   assert(Context);
-   try {
-       Context.tagSha = await getReference(Context.mergingTag());
-       return true;
-   } catch (e) {
-       if (e.notFound()) {
-           Context.log(Context.mergingTag() + " not found");
-           return false;
-       }
-       throw e;
-   }
-}
-
-// Loads 'being-in-merge' PR (i.e., with tag corresponding to auto_branch'), if exists.
-async function autoPR() {
-    const autoSha = await getReference(Config.autoBranch());
-    let tags = null;
-    try {
-       tags = await getTags();
-    } catch (e) {
-        if (e.notFound()) {
-            console.log("No tags found");
-            return false;
-        }
-        throw e;
-    }
-
-    let prNum = null;
-    tags.find( (tag) => {
-        if (tag.object.sha === autoSha) {
-            const matched = tag.ref.match(TagRegex);
-            if (matched)
-                prNum = matched[2];
-        }
-    });
-
-    if (prNum === null) {
-        console.log("No merging PR found.");
+    // 422 (unprocessable entity).
+    // E.g., FF merge failure returns this error.
+    unprocessable() {
+        if ('code' in this._err)
+            return this._err.code === 422;
         return false;
     }
 
-    let autoPr = null;
-    try {
-        autoPr = await getPR(prNum, false);
-    } catch (e) {
-        if (e.notFound()) {
-            console.log("PR" + prNum + " not found");
-            return false;
-        }
-        throw e;
-    }
-    Context = new MergeContext(autoPr, autoSha, autoSha);
-    // remove the loaded PR from the global list
-    const prevLen = PRList.length;
-    PRList = PRList.filter((pr) => { return pr.number !== Context.prNumber(); });
-    assert(prevLen - 1 === PRList.length);
-    return true;
-}
-
-// Extracts one PR from the list for processing.
-async function selectPR() {
-    assert(PRList.length > 0);
-    assert(!Context);
-    if (!(await autoPR()))
-       Context = new MergeContext(PRList.shift());
-}
-
-// Checks whether the current PR has 'merge tag' (i.e., merge in progress).
-// Returns one of:
-// 'start': the tag does not exist or is stale; should start merging from scratch.
-// 'wait': the tag tests are in progress; should wait for their completion.
-// 'continue': the tag tests completed with success; should finish merging.
-// 'skip': the tag tests failed, the tag is no stale; do not process this PR.
-async function checkTag() {
-    assert(Context.tagSha);
-
-    const contexts = await getProtectedBranchRequiredStatusChecks(Context.prBaseBranch());
-
-    const commitStatus = await getStatuses(Context.tagSha, contexts);
-
-    if (commitStatus === 'pending') {
-        Context.log("waiting for more auto_branch statuses completing");
-        if (!Config.dryRun())
-            Context.autoSha = await updateReference(Config.autoBranch(), Context.tagSha, true);
-        return 'wait';
-    } else if ( commitStatus === 'success') {
-        Context.log("auto_branch checks succeeded");
-        Context.autoSha = await updateReference(Config.autoBranch(), Context.tagSha, true);
-        return 'continue';
-    } else {
-        assert(commitStatus === 'error');
-        const tagCommit = await getCommit(Context.tagSha);
-        const tagPr = await getPR(Context.prNumber(), true); // to force Github refresh the PR's 'merge' commit
-        assert(tagPr.number === Context.prNumber());
-        const prMergeSha = await getReference(Context.mergePath());
-        const prCommit = await getCommit(prMergeSha);
-
-        let ret = 'skip';
-        if (tagCommit.treeSha !== prCommit.treeSha) {
-            Context.log("merge commit has changed since last failed attempt");
-            if (!Config.dryRun())
-                await deleteReference(Context.mergingTag());
-            ret = 'start';
-        } else {
-            Context.log("merge commit has not changed since last failed attempt");
-            if (!Config.dryRun())
-                await addLabel(AutoChecksFailedLabel);
-            ret = 'skip';
-        }
-        if (!Config.dryRun()) {
-            // reset auto_branch to master's HEAD
-            const masterSha = await getReference("heads/master");
-            await updateReference(Config.autoBranch(), masterSha, true);
-        }
-        return ret;
+    toString() {
+        let msg = "";
+        if (this._method !== null)
+            msg = this._method;
+        if (msg.length)
+            msg += ", ";
+        msg += "Error: " + JSON.stringify(this._err);
+        if (this._args !== null)
+            msg += ", params: " + JSON.stringify(this._args);
+        return msg;
     }
 }
-
-// Checks whether the PR is ready for merge (all PR lamps are 'green').
-// Also forbids merging the already merged PR (marked with label) or
-// if was interrupted by an event ('Rerun' is true).
-async function checkMergePreconditions() {
-    assert(Context);
-    Context.log("checking merge preconditions...");
-
-    const pr = await getPR(Context.prNumber(), true);
-    Context.refreshPR(pr);
-
-    if (!Context.prMergeable()) {
-        Context.log("not mergeable yet.");
-        return false;
-    }
-
-    const collaborators = await getCollaborators();
-    const pushCollaborators = collaborators.filter((c) => { return c.permissions.push === true; });
-    const approved = await getReviews(Context.prNumber(), pushCollaborators);
-    if (!approved) {
-        Context.log("not approved yet.");
-        return false;
-    }
-
-    const contexts = await getProtectedBranchRequiredStatusChecks(Context.prBaseBranch());
-
-    const statusOk = await getStatuses(Context.prHeadSha(), contexts);
-    if (!statusOk) {
-        Context.log("statuses not succeeded.");
-        return false;
-    }
-
-    const labels = await getLabels(Context.prNumber());
-    if (markedAsMerged(labels)) {
-        Context.log("already merged");
-        return false;
-    }
-
-    if (Rerun) {
-        Context.log("rerun");
-        return false;
-    }
-
-    return true;
-}
-
-// Creates a 'merge commit' and adjusts auto_branch.
-async function startMerging() {
-    assert(Context);
-    Context.log("start merging...");
-    const masterSha = await getReference("heads/master");
-    const mergeSha = await getReference("pull/" + Context.prNumber() + "/merge");
-    const mergeCommit = await getCommit(mergeSha);
-    const tempCommitSha = await createCommit(mergeCommit.treeSha, Context.prMessage(), [masterSha]);
-    Context.tagSha = await createReference(tempCommitSha, "refs/" + Context.mergingTag());
-    Context.autoSha = await updateReference(Config.autoBranch(), Context.tagSha, true);
-}
-
-// Does 'ff' merge master into auto_branch.
-async function finishMerging() {
-    assert(Context);
-    assert(Context.autoSha);
-    Context.log("finish merging...");
-    // ensure we do ff merge
-    try {
-        await updateReference("heads/master", Context.autoSha, false);
-    } catch (e) {
-        if (e.unprocessable()) {
-            Context.log("FF merge failed");
-            // Should re-run when ff merge failed(e.g., master changed)
-            // and this is the last PR in the list.
-            if (!PRList.length)
-                Rerun = true;
-        }
-        throw e;
-    }
-}
-
-async function cleanup() {
-    Context.log("cleanup...");
-    await updatePR(Context.prNumber(), 'closed');
-    const allLabels = await addLabel(MergedLabel);
-    await deleteReference(Context.mergingTag());
-    await cleanupLabels(allLabels);
-    const masterSha = await getReference("heads/master");
-    await updateReference(Config.autoBranch(), masterSha, true);
-}
-
-// does not throw
-async function cleanupOnError() {
-    if (Context === null)
-        return;
-    Context.log("cleanup on error...");
-    // delete merging tag, if exists
-    try {
-        await deleteReference(Context.mergingTag());
-    } catch (e) {
-       if (e.notFound())
-           Context.log(Context.mergingTag() + " not found");
-       else
-           logError(e, "cleanupOnError");
-    }
-
-    // set labels, if needed
-    try {
-        const allLabels = await getLabels(Context.prNumber());
-        if (!allLabels.find((label) => { return (label.name === MergeFailedLabel); })) {
-            await addLabel(MergeFailedLabel);
-        }
-    } catch (e) {
-        logError(e, "cleanupOnError");
-    }
-
-    // reset auto_branch
-    try {
-        const masterSha = await getReference("heads/master");
-        await updateReference(Config.autoBranch(), masterSha, true);
-    } catch (e) {
-        logError(e, "cleanupOnError");
-    }
-}
-
 
 // helper methods
-
 function sleep(msec) {
     return new Promise((resolve) => setTimeout(resolve, msec));
-}
-
-function markedAsMerged(labels) {
-    return (labels.find((label) => {
-           return (label.name === MergedLabel); })) !== undefined;
-}
-
-function logError(err, details) {
-    let msg = "";
-    if (Context !== null)
-        msg += Context.toString() + " ";
-    if (details !== undefined)
-        msg += details + ": ";
-    msg += err.toString();
-    if ('stack' in err)
-        msg += err.stack.toString();
-    console.error(msg);
 }
 
 function logApiResult(method, params, result) {
     console.log(method, "OK, params:", JSON.stringify(params), "result:", JSON.stringify(result));
 }
-
-
-// Promisificated node-github wrappers
 
 // common parameters for all API calls
 function commonParams() {
@@ -572,7 +571,6 @@ function commonParams() {
 }
 
 function getPRList() {
-    PRList = [];
     const params = commonParams();
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
@@ -583,8 +581,7 @@ function getPRList() {
             }
             const result = res.data.length;
             logApiResult(getPRList.name, params, result);
-            PRList = res.data;
-            resolve(true);
+            resolve(res.data);
         });
     });
 }
@@ -851,18 +848,17 @@ function updatePR(prNum, state) {
   });
 }
 
-async function addLabel(label) {
-    assert(Context);
+async function addLabel(label, number) {
     let params = commonParams();
-    params.number = Context.prNumber();
+    params.number = number;
     params.labels = [];
     params.labels.push(label);
     return await addLabels(params);
 }
 
-async function cleanupLabels(allLabels) {
+async function cleanupLabels(allLabels, prNum) {
     let params = commonParams();
-    params.number = Context.prNumber();
+    params.number = prNum;
 
     if (allLabels.find((label) => { return (label.name === MergeFailedLabel); })) {
         params.name = MergeFailedLabel;
