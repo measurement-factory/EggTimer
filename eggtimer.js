@@ -229,21 +229,21 @@ class MergeContext {
     // Creates a 'merge commit' and adjusts auto_branch.
     async _startMerging() {
         this._log("start merging...");
-        const masterSha = await getReference("heads/master");
+        const baseSha = await getReference(this.prBaseBranchPath());
         const mergeSha = await getReference("pull/" + this.number() + "/merge");
         const mergeCommit = await getCommit(mergeSha);
-        const tempCommitSha = await createCommit(mergeCommit.treeSha, this.prMessage(), [masterSha]);
+        const tempCommitSha = await createCommit(mergeCommit.treeSha, this.prMessage(), [baseSha]);
         this._tagSha = await createReference(tempCommitSha, "refs/" + this.mergingTag());
         this._autoSha = await updateReference(Config.autoBranch(), this._tagSha, true);
     }
 
-    // Does 'ff' merge master into auto_branch.
+    // Does 'ff' merge base into auto_branch.
     async _finishMerging() {
         assert(this._autoSha);
         this._log("finish merging...");
         // ensure we do ff merge
         try {
-            await updateReference("heads/master", this._autoSha, false);
+            await updateReference(this.prBaseBranchPath(), this._autoSha, false);
         } catch (e) {
             if (e.unprocessable()) {
                 this._log("FF merge failed");
@@ -259,8 +259,8 @@ class MergeContext {
         const allLabels = await addLabel(MergedLabel, this.number());
         await deleteReference(this.mergingTag());
         await cleanupLabels(allLabels, this.number());
-        const masterSha = await getReference("heads/master");
-        await updateReference(Config.autoBranch(), masterSha, true);
+        const baseSha = await getReference(this.prBaseBranchPath());
+        await updateReference(Config.autoBranch(), baseSha, true);
     }
 
     // does not throw
@@ -306,6 +306,8 @@ class MergeContext {
     prMergeable() { return this._pr.mergeable; }
 
     prBaseBranch() { return this._pr.base.ref; }
+
+    prBaseBranchPath() { return "heads/" + this.prBaseBranch(); }
 
     prOpen() { return this._pr.state === 'open'; }
 
@@ -369,7 +371,7 @@ class MergeStep {
                     this.errors++;
                 if (mergeContext.inMerge)
                     break;
-                // Should re-run when ff merge failed(e.g., master changed)
+                // Should re-run when ff merge failed(e.g., base changed)
                 // and this is the last PR in the list.
                 if (mergeContext.mergeFailed && !this.prList.length)
                     Rerun = true;
