@@ -9,5 +9,5 @@
     "dry_run": false,
     "auto_branch": "heads/auto_branch",
     "reviews_number": 1
+    "approval_period": 10
 }
-

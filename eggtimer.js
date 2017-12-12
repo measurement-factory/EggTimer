@@ -11,9 +11,6 @@ const MergedLabel = "S-merged";
 const MergingTag = "T-merging-PR";
 const TagRegex = /(refs\/tags\/.*-PR)(\d+)$/;
 
-let Rerun = false;
-let Running = false;
-
 class ConfigOptions {
     constructor(fname) {
         const conf = JSON.parse(fs.readFileSync(fname));
@@ -27,6 +24,7 @@ class ConfigOptions {
         this._autoBranch = conf.auto_branch;
         this._dryRun = conf.dry_run;
         this._reviewsNumber = conf.reviews_number;
+        this._approvalPeriod = conf.approval_period; // in days
 
         const allOptions = Object.values(this);
         for (let v of allOptions) {
@@ -44,6 +42,7 @@ class ConfigOptions {
     autoBranch() { return this._autoBranch; }
     dryRun() { return this._dryRun; }
     reviewsNumber() { return this._reviewsNumber; }
+    approvalPeriod() { return this._approvalPeriod; }
 }
 
 const Config = new ConfigOptions('config.js');
@@ -51,6 +50,87 @@ const WebhookHandler = createHandler({ path: Config.githubWebhookPath(), secret:
 const Github = new nodeGithub({ version: "3.0.0" });
 const GithubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
 
+class RunScheduler {
+
+    constructor() {
+        this._prTimeouts = {};
+        this.rerun = false;
+        this.running = false;
+    }
+
+    async startup() {
+        http.createServer((req, res) => {
+            WebhookHandler(req, res, () => {
+                res.statusCode = 404;
+                res.end('no such location');
+            });
+        }).listen(Config.port());
+        this.run();
+    }
+
+    async run(prNum) {
+        console.log("running...");
+
+        if (prNum !== undefined)
+            this._unplan(prNum);
+
+        if (this.running) {
+            this.rerun = true;
+            return;
+        }
+
+        this.running = true;
+        let stepOk = false;
+        do {
+            this.rerun = false;
+            let step = new MergeStep();
+            stepOk = await step.run();
+        } while (this.rerun);
+        this.running = false;
+
+        if (!stepOk)
+            this.plan(10 * 60 * 1000); // 10 min
+    }
+
+    plan(ms, prNum) {
+        assert(ms >= 0);
+        if (prNum === undefined)
+            prNum = 0; // use prNum=0 as 'rerun' timeout key
+        this._unplan(prNum);
+        console.log("Planning rerun for PR" + prNum + " in " + this._msToTime(ms));
+        this._prTimeouts[prNum] = setTimeout(this.run.bind(this), ms, prNum);
+    }
+
+    _planned(prNum) {
+        return Object.keys(this._prTimeouts).find((num) => { return prNum === num; }) !== undefined;
+    }
+
+    _unplan(prNum) {
+        if (!this._planned(prNum))
+            return;
+        console.log("Unplanning rerun for PR" + prNum);
+        // does nothing if timed out already
+        clearTimeout(this._prTimeouts[prNum]);
+        delete this._prTimeouts[prNum];
+    }
+
+    // duration in ms
+    _msToTime(duration) {
+        let seconds = parseInt((duration/1000)%60);
+        let minutes = parseInt((duration/(1000*60))%60);
+        let hours = parseInt((duration/(1000*60*60))%24);
+        let days = parseInt((duration/(1000*60*60*24)));
+
+        days = (days < 10) ? "0" + days : days;
+        hours = (hours < 10) ? "0" + hours : hours;
+        minutes = (minutes < 10) ? "0" + minutes : minutes;
+        seconds = (seconds < 10) ? "0" + seconds : seconds;
+
+        return days + "d " + hours + "h " + minutes + "m " + seconds + "s";
+    }
+}
+
+const Scheduler = new RunScheduler();
 
 // Processing a single PR
 class MergeContext {
@@ -184,7 +264,7 @@ class MergeContext {
 
     // Checks whether the PR is ready for merge (all PR lamps are 'green').
     // Also forbids merging the already merged PR (marked with label) or
-    // if was interrupted by an event ('Rerun' is true).
+    // if was interrupted by an event ('Scheduler.rerun' is true).
     async _checkMergePreconditions() {
         this._log("checking merge preconditions...");
 
@@ -198,9 +278,14 @@ class MergeContext {
 
         const collaborators = await getCollaborators();
         const pushCollaborators = collaborators.filter((c) => { return c.permissions.push === true; });
-        const approved = await getReviews(this.number(), pushCollaborators);
-        if (!approved) {
+        // in ms
+        const timeToWait = await getReviews(this.number(), pushCollaborators, this.prAuthor());
+        if (timeToWait === null) {
             this._log("not approved yet.");
+            return false;
+        } else if (timeToWait !== 0) {
+            this._log("approved, will wait for " + timeToWait + " ms");
+            Scheduler.plan(timeToWait, this.number());
             return false;
         }
 
@@ -218,7 +303,7 @@ class MergeContext {
             return false;
         }
 
-        if (Rerun) {
+        if (Scheduler.rerun) {
             this._log("rerun");
             return false;
         }
@@ -303,6 +388,8 @@ class MergeContext {
             "(PR #" + this._pr.number + ")";
     }
 
+    prAuthor() { return this._pr.user.login; }
+
     prMergeable() { return this._pr.mergeable; }
 
     prBaseBranch() { return this._pr.base.ref; }
@@ -374,7 +461,7 @@ class MergeStep {
                 // Should re-run when ff merge failed(e.g., base changed)
                 // and this is the last PR in the list.
                 if (mergeContext.mergeFailed && !this.prList.length)
-                    Rerun = true;
+                    Scheduler.rerun = true;
                 mergeContext = await this._next();
             }
         } catch (e) {
@@ -455,60 +542,25 @@ WebhookHandler.on('error', (err) => {
 WebhookHandler.on('pull_request_review', (ev) => {
     const pr = ev.payload.pull_request;
     console.log("pull_request_review event:", ev.payload.id, pr.number, pr.head.sha, pr.state);
-    run();
+    Scheduler.run();
 });
 
 // https://developer.github.com/v3/activity/events/types/#pullrequestevent
 WebhookHandler.on('pull_request', (ev) => {
     const pr = ev.payload.pull_request;
     console.log("pull_request event:", ev.payload.id, pr.number, pr.head.sha, pr.state);
-    run();
+    Scheduler.run();
 });
 
 // https://developer.github.com/v3/activity/events/types/#statusevent
 WebhookHandler.on('status', (ev) => {
     const e = ev.payload;
     console.log("status event:", e.id, e.sha, e.context, e.state);
-    run();
+    Scheduler.run();
 });
 
 
-// Bot core methods
-
-async function startup() {
-    http.createServer((req, res) => {
-        WebhookHandler(req, res, () => {
-            res.statusCode = 404;
-            res.end('no such location');
-        });
-    }).listen(Config.port());
-    await run();
-}
-
-startup();
-
-async function run() {
-    console.log("running...");
-    if (Running) {
-        Rerun = true;
-        return;
-    }
-
-    Running = true;
-    let stepOk = false;
-    do {
-        Rerun = false;
-        let step = new MergeStep();
-        stepOk = await step.run();
-    } while (Rerun);
-    Running = false;
-
-    if (!stepOk) {
-        const min = 10;
-        console.error("run: previous step finished unexpectedly. Automatically re-try in " + min + " minutes.");
-        setTimeout(run, min * 60 * 1000);
-    }
-}
+Scheduler.startup();
 
 
 // Promisificated node-github wrappers
@@ -639,7 +691,10 @@ function requestPR(prNum) {
    });
 }
 
-function getReviews(prNum, pushCollaborators) {
+// If approved, returns number for milliseconds to wait (>=0),
+// zero means no waiting required.
+// If not approved, returns null.
+function getReviews(prNum, pushCollaborators, prAuthor) {
     let params = commonParams();
     params.number = prNum;
     return new Promise( (resolve, reject) => {
@@ -651,22 +706,49 @@ function getReviews(prNum, pushCollaborators) {
             }
 
             let reviews = {};
+            let approveDate = null;
             for (let review of res.data) {
                 // Reviews are returned in chronological order
-                if (review.state.toLowerCase() === "approved")
+                const reviewState = review.state.toLowerCase();
+                if (reviewState === "approved") {
                     reviews[review.user.login] = true;
+                    approveDate = review.submitted_at;
+                }
+                else if (reviewState === "changes_requested")
+                    reviews[review.user.login] = false;
             }
 
-            let approvals = 0;
-            for (let pushCollaborator of pushCollaborators) {
-                 if (Object.keys(reviews).find((key) => { return key === pushCollaborator.login; })) {
-                     approvals++;
-                 }
+            let approved = null;
+            if (Object.keys(reviews).find((key) => { return reviews[key] === false; }) !== undefined) {
+                approved = false;
+            } else {
+                let approvals = 0;
+                for (let pushCollaborator of pushCollaborators) {
+                     const voted = Object.keys(reviews).find((key) => { return key === pushCollaborator.login; }) !== undefined;
+                     if (voted || (prAuthor === pushCollaborator))
+                         approvals++;
+                }
+                approved = (approvals >= Config.reviewsNumber());
             }
 
-            const result = (approvals >= Config.reviewsNumber());
-            logApiResult(getReviews.name, params, {approved: result});
-            resolve(result);
+            let ms = null;
+            let desc = "not approved";
+            if (approved) {
+                assert(approveDate !== null);
+                const date = new Date(approveDate);
+                let beforeDate = new Date();
+                beforeDate.setDate(beforeDate.getDate() - Config.approvalPeriod());
+                if (date <= beforeDate) {
+                    ms = 0;
+                    desc = "approved(approval period finished)";
+                } else {
+                    ms = date - beforeDate;
+                    desc = "approved(in approval period)";
+                }
+            }
+
+            logApiResult(getReviews.name, params, {approved: desc});
+            resolve(ms);
         });
     });
 }
