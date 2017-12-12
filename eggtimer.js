@@ -68,6 +68,7 @@ class RunScheduler {
         this.run();
     }
 
+    // prNum (if provided) corresponds to a PR, scheduled this 'run'
     async run(prNum) {
         console.log("running...");
 
@@ -80,22 +81,28 @@ class RunScheduler {
         }
 
         this.running = true;
-        let stepOk = false;
         do {
-            this.rerun = false;
-            let step = new MergeStep();
-            stepOk = await step.run();
+            let step = null;
+            try {
+                this.rerun = false;
+                step = new MergeStep();
+                await step.run();
+            } catch (e) {
+                console.error(e.stack);
+                if (step)
+                    step.logStatistics();
+                this.rerun = true;
+                const period = 10; // 10 min
+                console.log("Next re-try in " + period + " minutes.");
+                await sleep(period * 60 * 1000); // 10 min
+            }
         } while (this.rerun);
         this.running = false;
-
-        if (!stepOk)
-            this.plan(10 * 60 * 1000); // 10 min
     }
 
     plan(ms, prNum) {
         assert(ms >= 0);
-        if (prNum === undefined)
-            prNum = 0; // use prNum=0 as 'rerun' timeout key
+        assert(prNum > 0);
         this._unplan(prNum);
         console.log("Planning rerun for PR" + prNum + " in " + this._msToTime(ms));
         this._prTimeouts[prNum] = setTimeout(this.run.bind(this), ms, prNum);
@@ -280,11 +287,9 @@ class MergeContext {
         const pushCollaborators = collaborators.filter((c) => { return c.permissions.push === true; });
         // in ms
         const timeToWait = await getReviews(this.number(), pushCollaborators, this.prAuthor());
-        if (timeToWait === null) {
-            this._log("not approved yet.");
+        if (timeToWait === null) // not approved
             return false;
-        } else if (timeToWait !== 0) {
-            this._log("approved, will wait for " + timeToWait + " ms");
+        else if (timeToWait !== 0) { // approved, but waiting
             Scheduler.plan(timeToWait, this.number());
             return false;
         }
@@ -446,30 +451,23 @@ class MergeStep {
     // Returns if either all PRs have been processed(merged or skipped), or
     // there is a PR still-in-merge.
     async run() {
-        try {
-            console.log("Running merge step...");
-            this.prList = await getPRList();
-            let mergeContext = await this._current();
-            if (!mergeContext)
-                mergeContext = await this._next();
-            while (mergeContext) {
-                this.total++;
-                if (!(await mergeContext.process()))
-                    this.errors++;
-                if (mergeContext.inMerge)
-                    break;
-                // Should re-run when ff merge failed(e.g., base changed)
-                // and this is the last PR in the list.
-                if (mergeContext.mergeFailed && !this.prList.length)
-                    Scheduler.rerun = true;
-                mergeContext = await this._next();
-            }
-        } catch (e) {
-            console.error(e.stack);
-            return false;
+        console.log("Running merge step...");
+        this.prList = await getPRList();
+        let mergeContext = await this._current();
+        if (!mergeContext)
+            mergeContext = await this._next();
+        while (mergeContext) {
+            this.total++;
+            if (!(await mergeContext.process()))
+                this.errors++;
+            if (mergeContext.inMerge)
+                break;
+            // Should re-run when ff merge failed(e.g., base changed)
+            // and this is the last PR in the list.
+            if (mergeContext.mergeFailed && !this.prList.length)
+                Scheduler.rerun = true;
+            mergeContext = await this._next();
         }
-        this.logStatistics();
-        return true;
     }
 
     async _next() {
