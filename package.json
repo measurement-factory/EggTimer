@@ -5,6 +5,7 @@
   "main": "eggtimer.js",
   "dependencies": {
     "bluebird": "^3.3.4",
+    "bunyan": "^1.8.12",
     "github": "9.2.0",
     "github-webhook-handler": "^0.6.0",
     "parse-github-url": "^0.3.2"

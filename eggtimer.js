@@ -4,6 +4,7 @@ const createHandler = require('github-webhook-handler');
 const nodeGithub = require('github');
 const assert = require('assert');
 const endOfLine = require('os').EOL;
+const bunyan = require('bunyan');
 
 const MergeFailedLabel = "S-merge-failed";
 const AutoChecksFailedLabel = "S-autochecks-failed";
@@ -49,6 +50,7 @@ const Config = new ConfigOptions('config.js');
 const WebhookHandler = createHandler({ path: Config.githubWebhookPath(), secret: Config.githubWebhookSecret() });
 const Github = new nodeGithub({ version: "3.0.0" });
 const GithubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
+let Logger;
 
 class RunScheduler {
 
@@ -59,18 +61,31 @@ class RunScheduler {
     }
 
     async startup() {
+
+        Logger = bunyan.createLogger({
+        name: 'eggtimer',
+        streams: [{
+            type: 'rotating-file',
+            path: './eggtimer.log',
+            period: '1d', // daily rotation
+            count: 3 // keep 3 back copies
+          }]
+        });
+        Logger.addStream({name: "eggtimer-out", stream: process.stdout});
+
         http.createServer((req, res) => {
             WebhookHandler(req, res, () => {
                 res.statusCode = 404;
                 res.end('no such location');
             });
         }).listen(Config.port());
+        Logger.info("startup");
         this.run();
     }
 
     // prNum (if provided) corresponds to a PR, scheduled this 'run'
     async run(prNum) {
-        console.log("running...");
+        Logger.info("running...");
 
         if (prNum !== undefined)
             this._unplan(prNum);
@@ -88,12 +103,12 @@ class RunScheduler {
                 step = new MergeStep();
                 await step.run();
             } catch (e) {
-                console.error(e.stack);
+                Logger.error(e.stack);
                 if (step)
                     step.logStatistics();
                 this.rerun = true;
                 const period = 10; // 10 min
-                console.log("Next re-try in " + period + " minutes.");
+                Logger.info("next re-try in " + period + " minutes.");
                 await sleep(period * 60 * 1000); // 10 min
             }
         } while (this.rerun);
@@ -104,7 +119,7 @@ class RunScheduler {
         assert(ms >= 0);
         assert(prNum > 0);
         this._unplan(prNum);
-        console.log("Planning rerun for PR" + prNum + " in " + this._msToTime(ms));
+        Logger.info("planning rerun for PR" + prNum + " in " + this._msToTime(ms));
         this._prTimeouts[prNum] = setTimeout(this.run.bind(this), ms, prNum);
     }
 
@@ -115,7 +130,7 @@ class RunScheduler {
     _unplan(prNum) {
         if (!this._planned(prNum))
             return;
-        console.log("Unplanning rerun for PR" + prNum);
+        Logger.info("unplanning rerun for PR" + prNum);
         // does nothing if timed out already
         clearTimeout(this._prTimeouts[prNum]);
         delete this._prTimeouts[prNum];
@@ -414,7 +429,7 @@ class MergeContext {
     mergePath() { return "pull/" + this._pr.number + "/merge"; }
 
     _log(msg) {
-        console.log("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
+        Logger.info("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
     }
 
     _logError(err, details) {
@@ -424,7 +439,7 @@ class MergeContext {
         msg += err.toString();
         if ('stack' in err)
             msg += err.stack.toString();
-        console.error(msg);
+        Logger.error(msg);
     }
 
     toString() {
@@ -451,7 +466,7 @@ class MergeStep {
     // Returns if either all PRs have been processed(merged or skipped), or
     // there is a PR still-in-merge.
     async run() {
-        console.log("Running merge step...");
+        Logger.info("running merge step...");
         this.prList = await getPRList();
         let mergeContext = await this._current();
         if (!mergeContext)
@@ -486,7 +501,7 @@ class MergeStep {
            tags = await getTags();
         } catch (e) {
             if (e.notFound()) {
-                console.log("No tags found");
+                Logger.info("No tags found");
                 return null;
             }
             throw e;
@@ -502,7 +517,7 @@ class MergeStep {
         });
 
         if (prNum === null) {
-            console.log("No merging PR found.");
+            Logger.info("No merging PR found.");
             return null;
         }
 
@@ -511,7 +526,7 @@ class MergeStep {
             autoPr = await getPR(prNum, false);
         } catch (e) {
             if (e.notFound()) {
-                console.log("PR" + prNum + " not found");
+                Logger.info("PR" + prNum + " not found");
                 return null;
             }
             throw e;
@@ -525,7 +540,7 @@ class MergeStep {
     }
 
     logStatistics() {
-        console.log("Merge step finished. Total PRs processed: " + this.total + ", skipped due to errors: " + this.errors);
+        Logger.info("Merge step finished. Total PRs processed: " + this.total + ", skipped due to errors: " + this.errors);
     }
 
 } // MergeStep
@@ -533,27 +548,27 @@ class MergeStep {
 // events
 
 WebhookHandler.on('error', (err) => {
-   console.error('Error:', err.message);
+   Logger.error('Error:', err.message);
 });
 
 // https://developer.github.com/v3/activity/events/types/#pullrequestreviewevent
 WebhookHandler.on('pull_request_review', (ev) => {
     const pr = ev.payload.pull_request;
-    console.log("pull_request_review event:", ev.payload.id, pr.number, pr.head.sha, pr.state);
+    Logger.info("pull_request_review event:", ev.payload.id, pr.number, pr.head.sha, pr.state);
     Scheduler.run();
 });
 
 // https://developer.github.com/v3/activity/events/types/#pullrequestevent
 WebhookHandler.on('pull_request', (ev) => {
     const pr = ev.payload.pull_request;
-    console.log("pull_request event:", ev.payload.id, pr.number, pr.head.sha, pr.state);
+    Logger.info("pull_request event:", ev.payload.id, pr.number, pr.head.sha, pr.state);
     Scheduler.run();
 });
 
 // https://developer.github.com/v3/activity/events/types/#statusevent
 WebhookHandler.on('status', (ev) => {
     const e = ev.payload;
-    console.log("status event:", e.id, e.sha, e.context, e.state);
+    Logger.info("status event:", e.id, e.sha, e.context, e.state);
     Scheduler.run();
 });
 
@@ -611,7 +626,7 @@ function sleep(msec) {
 }
 
 function logApiResult(method, params, result) {
-    console.log(method, "OK, params:", JSON.stringify(params), "result:", JSON.stringify(result));
+    Logger.info(method, "OK, params:", JSON.stringify(params), "result:", JSON.stringify(result));
 }
 
 // common parameters for all API calls
@@ -661,7 +676,7 @@ async function getPR(prNum, awaitMergeable) {
         const pr = await requestPR(prNum);
         if (!awaitMergeable || pr.mergeable !== null)
             return pr;
-        console.log("PR" + prNum + ": Github still caluclates mergeable status. Will retry in " + (d/1000) + " seconds");
+        Logger.info("PR" + prNum + ": Github still caluclates mergeable status. Will retry in " + (d/1000) + " seconds");
         await sleep(d);
     }
     return Promise.reject(new ErrorContext("Github could not calculate mergeable status",
