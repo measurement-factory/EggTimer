@@ -11,6 +11,7 @@ const AutoChecksFailedLabel = "S-autochecks-failed";
 const MergedLabel = "S-merged";
 const MergingTag = "T-merging-PR";
 const TagRegex = /(refs\/tags\/.*-PR)(\d+)$/;
+const MsPerDay = 86400 * 1000;
 
 class ConfigOptions {
     constructor(fname) {
@@ -24,8 +25,9 @@ class ConfigOptions {
         this._owner = conf.owner;
         this._autoBranch = conf.auto_branch;
         this._dryRun = conf.dry_run;
-        this._reviewsNumber = conf.reviews_number;
+        this._approvalsNumber = conf.approvals_number;
         this._approvalPeriod = conf.approval_period; // in days
+        this._rejectPeriod = conf.reject_period; // in days
 
         const allOptions = Object.values(this);
         for (let v of allOptions) {
@@ -42,8 +44,9 @@ class ConfigOptions {
     owner() { return this._owner; }
     autoBranch() { return this._autoBranch; }
     dryRun() { return this._dryRun; }
-    reviewsNumber() { return this._reviewsNumber; }
+    approvalsNumber() { return this._approvalsNumber; }
     approvalPeriod() { return this._approvalPeriod; }
+    rejectPeriod() { return this._rejectPeriod; }
 }
 
 const Config = new ConfigOptions('config.js');
@@ -438,7 +441,7 @@ class MergeContext {
             msg += details + ": ";
         msg += err.toString();
         if ('stack' in err)
-            msg += err.stack.toString();
+            msg += " " + err.stack.toString();
         Logger.error(msg);
     }
 
@@ -718,50 +721,63 @@ function getReviews(prNum, pushCollaborators, prAuthor) {
                 return;
             }
 
-            let reviews = {};
+            let approvals = {};
             let approveDate = null;
             for (let review of res.data) {
                 // Reviews are returned in chronological order
                 const reviewState = review.state.toLowerCase();
                 if (reviewState === "approved") {
-                    reviews[review.user.login] = true;
+                    approvals[review.user.login] = true;
+                    if (approveDate === null) {
+                        const msPassed = new Date() - new Date(review.submitted_at);
+                        if (msPassed/MsPerDay < Config.rejectPeriod()) {
+                            logApiResult(getReviews.name, params, {approved: "approved(in reject period"});
+                            resolve(Config.rejectPeriod() * MsPerDay - msPassed);
+                            return;
+                        }
+                    }
                     approveDate = review.submitted_at;
                 }
-                else if (reviewState === "changes_requested")
-                    reviews[review.user.login] = false;
-            }
-
-            let approved = null;
-            if (Object.keys(reviews).find((key) => { return reviews[key] === false; }) !== undefined) {
-                approved = false;
-            } else {
-                let approvals = 0;
-                for (let pushCollaborator of pushCollaborators) {
-                     const voted = Object.keys(reviews).find((key) => { return key === pushCollaborator.login; }) !== undefined;
-                     if (voted || (prAuthor === pushCollaborator))
-                         approvals++;
+                else if (reviewState === "changes_requested") {
+                    approvals[review.user.login] = false;
                 }
-                approved = (approvals >= Config.reviewsNumber());
             }
 
-            let ms = null;
-            let desc = "not approved";
-            if (approved) {
+            let approvalsNum = 0;
+            for (let pushCollaborator of pushCollaborators) {
+                 if (prAuthor === pushCollaborator.login) {
+                     approvalsNum++;
+                     continue;
+                 }
+                 const voted = Object.keys(approvals).find((key) => { return key === pushCollaborator.login; }) !== undefined;
+                 if (voted && (approvals[pushCollaborator.login] === true))
+                     approvalsNum++;
+            }
+
+            let msToWait = null;
+            let desc = "approved by " + approvalsNum + " core developer(s)";
+            if (approvalsNum === 0) {
+                desc = "not approved";
+            } else if (approvalsNum < Config.approvalsNumber()) {
                 assert(approveDate !== null);
                 const date = new Date(approveDate);
                 let beforeDate = new Date();
                 beforeDate.setDate(beforeDate.getDate() - Config.approvalPeriod());
                 if (date <= beforeDate) {
-                    ms = 0;
-                    desc = "approved(approval period finished)";
+                    msToWait = 0;
+                    desc += ", approval period finished";
                 } else {
-                    ms = date - beforeDate;
-                    desc = "approved(in approval period)";
+                    msToWait = date - beforeDate;
+                    desc += ", in approval period";
                 }
+            } else {
+                // approvals > Config.approvalsNumber()
+                // can be submitted immediately
+                msToWait = 0;
             }
 
             logApiResult(getReviews.name, params, {approved: desc});
-            resolve(ms);
+            resolve(msToWait);
         });
     });
 }

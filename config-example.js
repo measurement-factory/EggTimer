@@ -8,6 +8,7 @@
     "owner": "an-owner",
     "dry_run": false,
     "auto_branch": "heads/auto_branch",
-    "reviews_number": 1
-    "approval_period": 10
+    "approvals_number": 1,
+    "approval_period": 10,
+    "reject_period": 2
 }
