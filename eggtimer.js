@@ -6,9 +6,17 @@ const assert = require('assert');
 const endOfLine = require('os').EOL;
 const bunyan = require('bunyan');
 
+// FF merge failed
 const MergeFailedLabel = "S-merge-failed";
+// Some of required auto checks failed
 const AutoChecksFailedLabel = "S-autochecks-failed";
+// FF merge succeeded
 const MergedLabel = "S-merged";
+// Merge started (tag and auto branch successfully adjusted)
+const MergingLabel = "S-merging";
+// Merge succeeded up to FF step. For testing purpose.
+const MergeReadyLabel = "S-merge-ready";
+
 const MergingTag = "T-merging-PR";
 const TagRegex = /(refs\/tags\/.*-PR)(\d+)$/;
 const MsPerDay = 86400 * 1000;
@@ -25,7 +33,9 @@ class ConfigOptions {
         this._owner = conf.owner;
         this._autoBranch = conf.auto_branch;
         this._dryRun = conf.dry_run;
+        this._skipMerge = conf.skip_merge;
         this._approvalsNumber = conf.approvals_number;
+        assert(this._approvalsNumber > 1);
         this._approvalPeriod = conf.approval_period; // in days
         this._rejectPeriod = conf.reject_period; // in days
 
@@ -44,6 +54,7 @@ class ConfigOptions {
     owner() { return this._owner; }
     autoBranch() { return this._autoBranch; }
     dryRun() { return this._dryRun; }
+    skipMerge() { return this._skipMerge; }
     approvalsNumber() { return this._approvalsNumber; }
     approvalPeriod() { return this._approvalPeriod; }
     rejectPeriod() { return this._rejectPeriod; }
@@ -195,6 +206,7 @@ class MergeContext {
                     return true;
                 }
                 await this._startMerging();
+                await this._labelMerging();
                 // merging started successfully
                 this.inMerge = true;
                 return true;
@@ -207,8 +219,16 @@ class MergeContext {
                     this._log("skip finish merging due to dry_run option");
                     return true;
                 }
+
+                await this._labelMergeReady();
+
+                if (Config.skipMerge()) {
+                    this._log("skip finish merging due to skip_merge option");
+                    return true;
+                }
+
                 await this._finishMerging();
-                await this._cleanup();
+                await this._cleanupMerged();
                 // merging finished successfully
                 return true;
             } else if (checkTagResult === 'wait') {
@@ -222,7 +242,7 @@ class MergeContext {
             }
         } catch (err) {
             this._logError(err, "MergeContext.process");
-            await this._cleanupOnError();
+            await this._cleanupUnexpectedError();
             return false;
         }
     }
@@ -278,9 +298,14 @@ class MergeContext {
                     await deleteReference(this.mergingTag());
                 ret = 'start';
             } else {
-                this._log("merge commit has not changed since last failed attempt");
+                let msg = "merge commit has not changed since last failed attempt";
+                // the base branch could be changed but resulting with new conflicts,
+                // merge commit is not updated then
+                if (tagPr.mergeable !== true)
+                    msg += " due to conflicts with " + tagPr.base.ref;
+                this._log(msg);
                 if (!Config.dryRun())
-                    await addLabel(AutoChecksFailedLabel, this.number());
+                    await this._labelAutoFailed();
                 ret = 'skip';
             }
             return ret;
@@ -305,7 +330,7 @@ class MergeContext {
         const pushCollaborators = collaborators.filter((c) => { return c.permissions.push === true; });
         // in ms
         const timeToWait = await getReviews(this.number(), pushCollaborators, this.prAuthor());
-        if (timeToWait === null) // not approved
+        if (timeToWait === null) // not approved or rejected
             return false;
         else if (timeToWait !== 0) { // approved, but waiting
             Scheduler.plan(timeToWait, this.number());
@@ -320,8 +345,7 @@ class MergeContext {
             return false;
         }
 
-        const labels = await getLabels(this.number());
-        if ((labels.find((label) => { return (label.name === MergedLabel); })) !== undefined) {
+        if (await this.hasLabel(MergedLabel, this.number())) {
             this._log("already merged");
             return false;
         }
@@ -361,39 +385,37 @@ class MergeContext {
         }
     }
 
-    async _cleanup() {
+    // adjusts the successfully merged PR (labels, status, tag)
+    async _cleanupMerged() {
         this._log("cleanup...");
+        await this._labelMerged();
         await updatePR(this.number(), 'closed');
-        const allLabels = await addLabel(MergedLabel, this.number());
         await deleteReference(this.mergingTag());
-        await cleanupLabels(allLabels, this.number());
         const baseSha = await getReference(this.prBaseBranchPath());
         await updateReference(Config.autoBranch(), baseSha, true);
     }
 
     // does not throw
-    async _cleanupOnError() {
+    async _cleanupUnexpectedError() {
         if (this === null)
             return;
-        this._log("cleanup on error...");
+        this._log("cleanup on unexpected error...");
         // delete merging tag, if exists
         try {
             await deleteReference(this.mergingTag());
         } catch (e) {
+            // For the record: Github returns 422 error if there is no such
+            // reference 'refs/:sha', and 404 if there is no such tag 'tags/:tag'.
             if (e.notFound())
-                this._log(this.mergingTag() + " not found");
+                this._log(this.mergingTag() + "tag not found");
             else
-                this._logError(e, "cleanupOnError");
+                this._logError(e, "cleanupUnexpectedError");
         }
 
-        // set labels, if needed
         try {
-            const allLabels = await getLabels(this.number());
-            if (!allLabels.find((label) => { return (label.name === MergeFailedLabel); })) {
-                await addLabel(MergeFailedLabel, this.number());
-            }
+            await this._labelMergeFailed();
         } catch (e) {
-            this._logError(e, "cleanupOnError");
+            this._logError(e, "cleanupUnexpectedError");
         }
     }
 
@@ -401,6 +423,77 @@ class MergeContext {
         assert(pr.number === this._pr.number);
         this._pr = pr;
     }
+
+    // Label manipulation methods
+
+    async hasLabel(label) {
+        const labels = await getLabels(this.number());
+        return ((labels.find((lbl) => { return (lbl.name === label); })) !== undefined);
+    }
+
+    async removeLabel(label) {
+        try {
+            await removeLabel(label, this.number());
+        } catch (e) {
+            if (e.notFound()) {
+                this._log("removeLabel: " + label + " not found");
+                return;
+            }
+            throw e;
+        }
+    }
+
+    async addLabel(label) {
+        let params = commonParams();
+        params.number = this.number();
+        params.labels = [];
+        params.labels.push(label);
+        try {
+            await addLabels(params);
+        } catch (e) {
+            // TODO: also extract and check for "already_exists" code:
+            // { "message": "Validation Failed", "errors": [ { "resource": "Label", "code": "already_exists", "field": "name" } ] }
+            if (e.unprocessable()) {
+                Logger.info("addLabel: " + label + " already exists");
+                return;
+            }
+            throw e;
+        }
+    }
+
+    async _labelMerging() {
+        await this.removeLabel(MergeReadyLabel);
+        await this.removeLabel(MergeFailedLabel);
+        await this.removeLabel(AutoChecksFailedLabel);
+        await this.addLabel(MergingLabel);
+    }
+
+    async _labelMerged() {
+        await this.removeLabel(MergingLabel);
+        await this.removeLabel(MergeReadyLabel);
+        await this.removeLabel(MergeFailedLabel);
+        await this.removeLabel(AutoChecksFailedLabel);
+        await this.addLabel(MergedLabel);
+    }
+
+    async _labelMergeFailed() {
+        await this.removeLabel(MergingLabel);
+        await this.removeLabel(MergeReadyLabel);
+        await this.addLabel(MergeFailedLabel);
+    }
+
+    async _labelAutoFailed() {
+        await this.removeLabel(MergingLabel);
+        await this.addLabel(AutoChecksFailedLabel);
+    }
+
+    async _labelMergeReady() {
+        await this.removeLabel(MergingLabel);
+        await this.removeLabel(AutoChecksFailedLabel);
+        await this.addLabel(MergeReadyLabel);
+    }
+
+    // Getters
 
     number() { return this._pr.number; }
 
@@ -709,7 +802,7 @@ function requestPR(prNum) {
 
 // If approved, returns number for milliseconds to wait (>=0),
 // zero means no waiting required.
-// If not approved, returns null.
+// If not approved (or rejected), returns null.
 function getReviews(prNum, pushCollaborators, prAuthor) {
     let params = commonParams();
     params.number = prNum;
@@ -744,19 +837,28 @@ function getReviews(prNum, pushCollaborators, prAuthor) {
             }
 
             let approvalsNum = 0;
+            let rejectedBy = null;
             for (let pushCollaborator of pushCollaborators) {
                  if (prAuthor === pushCollaborator.login) {
                      approvalsNum++;
                      continue;
                  }
                  const voted = Object.keys(approvals).find((key) => { return key === pushCollaborator.login; }) !== undefined;
-                 if (voted && (approvals[pushCollaborator.login] === true))
-                     approvalsNum++;
+                 if (voted) {
+                    if (approvals[pushCollaborator.login] === true)
+                       approvalsNum++;
+                    else {
+                       rejectedBy = pushCollaborator.login;
+                       break;
+                    }
+                 }
             }
 
             let msToWait = null;
             let desc = "approved by " + approvalsNum + " core developer(s)";
-            if (approvalsNum === 0) {
+            if (rejectedBy !== null)
+                desc = "rejected by " + rejectedBy;
+            else if (approvalsNum === 0) {
                 desc = "not approved";
             } else if (approvalsNum < Config.approvalsNumber()) {
                 assert(approveDate !== null);
@@ -771,17 +873,20 @@ function getReviews(prNum, pushCollaborators, prAuthor) {
                     desc += ", in approval period";
                 }
             } else {
-                // approvals > Config.approvalsNumber()
                 // can be submitted immediately
+                assert(approvals >= Config.approvalsNumber());
                 msToWait = 0;
             }
 
-            logApiResult(getReviews.name, params, {approved: desc});
+            logApiResult(getReviews.name, params, {approval: desc});
             resolve(msToWait);
         });
     });
 }
 
+// returns 'pending' if some of required checks are 'pending'
+// returns 'success' if all of required are 'success'
+// returns 'error' otherwise
 function getStatuses(ref, requiredContexts) {
     let params = commonParams();
     params.ref = ref;
@@ -961,29 +1066,6 @@ function updatePR(prNum, state) {
   });
 }
 
-async function addLabel(label, number) {
-    let params = commonParams();
-    params.number = number;
-    params.labels = [];
-    params.labels.push(label);
-    return await addLabels(params);
-}
-
-async function cleanupLabels(allLabels, prNum) {
-    let params = commonParams();
-    params.number = prNum;
-
-    if (allLabels.find((label) => { return (label.name === MergeFailedLabel); })) {
-        params.name = MergeFailedLabel;
-        await removeLabel(params);
-    }
-
-    if (allLabels.find((label) => { return (label.name === AutoChecksFailedLabel); })) {
-        params.name = AutoChecksFailedLabel;
-        await removeLabel(params);
-    }
-}
-
 function addLabels(params) {
    return new Promise( (resolve, reject) => {
      Github.authenticate(GithubAuthentication);
@@ -999,18 +1081,21 @@ function addLabels(params) {
   });
 }
 
-function removeLabel(params) {
-   return new Promise( (resolve, reject) => {
-     Github.authenticate(GithubAuthentication);
-     Github.issues.removeLabel(params, (err) => {
-         if (err) {
-            reject(new ErrorContext(err, addLabels.name, params));
-            return;
-         }
-         const result = {removed: true};
-         logApiResult(removeLabel.name, params, result);
-         resolve(result);
-     });
+function removeLabel(label, prNum) {
+    let params = commonParams();
+    params.number = prNum;
+    params.name = label;
+    return new Promise( (resolve, reject) => {
+      Github.authenticate(GithubAuthentication);
+      Github.issues.removeLabel(params, (err) => {
+          if (err) {
+             reject(new ErrorContext(err, addLabels.name, params));
+             return;
+          }
+          const result = {removed: true};
+          logApiResult(removeLabel.name, params, result);
+          resolve(result);
+      });
   });
 }
 

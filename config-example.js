@@ -7,6 +7,7 @@
     "repo": "a-repo",
     "owner": "an-owner",
     "dry_run": false,
+    "skip_merge": false,
     "auto_branch": "heads/auto_branch",
     "approvals_number": 1,
     "approval_period": 10,
