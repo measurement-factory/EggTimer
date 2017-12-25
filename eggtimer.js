@@ -345,8 +345,8 @@ class MergeContext {
             return false;
         }
 
-        const statusOk = await this._checkStatuses(this.prHeadSha());
-        if (!statusOk) {
+        const commitStatus = await this._checkStatuses(this.prHeadSha());
+        if (commitStatus !== 'success') {
             this._log("statuses not succeeded.");
             return false;
         }
@@ -516,24 +516,25 @@ class MergeContext {
     async _checkStatuses(ref) {
 
         const requiredContexts = await getProtectedBranchRequiredStatusChecks(this.prBaseBranch());
+        // https://developer.github.com/v3/repos/statuses/#get-the-combined-status-for-a-specific-ref
+        // state is one of 'failure', 'error', 'pending' or 'success'.
+        // We treat both 'failure' and 'error' as an 'error'.
         let statuses = await getStatuses(ref);
+
         // An array of [{context, state}] elements
-        let checks = [];
-        // Get actual statuses, keeping in mind that they are returned
-        // in reverse chronological order.
+        let requiredChecks = [];
+        // filter out non-required checks
         for (let st of statuses) {
-            if (!requiredContexts.find(el => el.context === st.context))
-                continue;
-            if (!checks.find(el => el.context === st.context))
-                checks.push({context: st.context, state: st.state});
+            if (requiredContexts.find(el => el.context === st.context))
+                requiredChecks.push({context: st.context, state: st.state});
         }
 
-        if (checks.find(check => check.state === 'pending'))
+        if (requiredChecks.find(check => check.state === 'pending'))
             return 'pending';
 
-        const prevLen = checks.length;
-        checks = checks.filter(check => check.state === 'success');
-        return prevLen === checks.length ? 'success' : 'error';
+        const prevLen = requiredChecks.length;
+        requiredChecks = requiredChecks.filter(check => check.state === 'success');
+        return prevLen === requiredChecks.length ? 'success' : 'error';
     }
 
     // Label manipulation methods
@@ -941,13 +942,13 @@ function getStatuses(ref) {
     params.ref = ref;
     return new Promise( (resolve, reject) => {
         Github.authenticate(GithubAuthentication);
-        Github.repos.getStatuses(params, (err, res) => {
+        Github.repos.getCombinedStatusForRef(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, getStatuses.name, params));
                 return;
             }
-            logApiResult(getStatuses.name, params, {statuses: res.data.length});
-            resolve(res.data);
+            logApiResult(getStatuses.name, params, {statuses: res.data.statuses.length});
+            resolve(res.data.statuses);
         });
     });
 }
