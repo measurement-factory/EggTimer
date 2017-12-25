@@ -51,23 +51,23 @@ ignored by the bot (e.g., if they were set manually by a Github user).
 
 #### PR approving
 
-The bot essentially implements official voting
+The bot essentially implements the official voting
 [requirements](https://wiki.squid-cache.org/MergeProcedure), with some
 differences:
 
 * For reliability sake, only approvals of core developers are considered.
 
 * In order to let all interested core developers to review a PR, there is a
-  so-called 'rejection period'. This period starts from the first core
-  developer approval date and lasts for 2 days(by default). The bot will not
-  attempt to merge the PR during this period.
+  so-called 'rejection period'. This period starts from the PR creation date
+  date and lasts for 2 days(by default). The bot will not attempt to merge
+  the PR during this period.
 
 * The bot will merge PR just after 'rejection period' if it was approved by
-  several core developers (>=2). PR author's vote (if he is a core developer at
-  the same time) is automatically appended.
+  several core developers (>=2). If PR author is a core develper, its vote
+  is automatically appended.
 
 * One negative vote by a core developer blocks the merge until resolved
-  (unchanged)
+  (unchanged, placed here for completeness).
 
 * PRs with only one core developer approval (and no rejections) will be
   accepted after a 8 days period (starting from the end of 'reject period').
@@ -161,7 +161,7 @@ explanation of the fields:
 *reject_period*| For the given PR: how many days, starting from the PR first approval of a core developer, the bot will wait before proceeding | 2
 
 
-### Start webserver
+### Start the bot
 
 This needs to be a publicly accessible server (or accessible from GitHub's webhooks):
 
