@@ -66,6 +66,14 @@ const Github = new nodeGithub({ version: "3.0.0" });
 const GithubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
 let Logger;
 
+function logError(err, context) {
+    assert(context);
+    let msg = context + ": " + err.toString();
+    if ('stack' in err)
+        msg += " " + err.stack.toString();
+    Logger.error(msg);
+}
+
 class RunScheduler {
 
     constructor() {
@@ -117,7 +125,7 @@ class RunScheduler {
                 step = new MergeStep();
                 await step.run();
             } catch (e) {
-                Logger.error(e.stack);
+                logError(e, "RunScheduler.run");
                 if (step)
                     step.logStatistics();
                 this.rerun = true;
@@ -172,11 +180,14 @@ const Scheduler = new RunScheduler();
 class MergeContext {
 
     constructor(pr, aSha, tSha) {
-        // Whether the PR is in-process (auto checks are running)
-        // or not (skipped due to failed checks or successfully merged).
-        this.inMerge = null;
-        // true when FF merge master into auto_branch fails
-        this.mergeFailed = false;
+        // whether auto checks are still running for this PR
+        this.autoStarted = false;
+        // true when fast-forwarding master into auto_branch fails
+        this.ffMergeFailed = false;
+        // Marks still in-process PR: set to 'true' when the PR is selected
+        // for merging and reset to 'false' when it was successfully merged
+        // or skipped due to an error (e.g., failed auto checks).
+        this._inProcess = false;
 
         this._pr = pr;
         this._autoSha = (aSha === undefined) ? null : aSha;
@@ -186,68 +197,59 @@ class MergeContext {
 
     // Advances the PR towards merge.
     async process() {
-        try {
-            assert(this.tagsConsistent());
-            this.inMerge = false;
+        assert(this.tagsConsistent());
 
-            if (!this._autoSha)
-                await this._loadTag();
+        if (!this._autoSha)
+            await this._loadTag();
 
-            let checkTagResult = null;
-            if (this._tagSha)
-                checkTagResult = await this._checkTag();
+        let checkTagResult = null;
+        if (this._tagSha)
+            checkTagResult = await this._checkTag();
 
-            if (!checkTagResult || checkTagResult === 'start') {
-                if (!(await this._checkMergePreconditions())) {
-                    return true;
-                }
-                if (Config.dryRun()) {
-                    this._log("skip start merging due to dry_run option");
-                    return true;
-                }
-                await this._startMerging();
-                await this._labelMerging();
-                // merging started successfully
-                this.inMerge = true;
-                return true;
+        if (!checkTagResult || checkTagResult === 'start') {
+            if (!(await this._checkMergePreconditions()))
+                return;
+
+            if (Config.dryRun()) {
+                this._log("skip start merging due to dry_run option");
+                return;
+            }
+            this._inProcess = true;
+            await this._startMerging();
+            await this._labelMerging();
+            this.autoStarted = true;
+            return;
+        }
+
+        assert(checkTagResult);
+
+        if (checkTagResult === 'continue') {
+            if (Config.dryRun()) {
+                this._log("skip finish merging due to dry_run option");
+                return;
+            }
+            this._inProcess = true;
+            await this._labelMergeReady();
+
+            if (Config.skipMerge()) {
+                this._log("skip finish merging due to skip_merge option");
+                return;
             }
 
-            assert(checkTagResult);
-
-            if (checkTagResult === 'continue') {
-                if (Config.dryRun()) {
-                    this._log("skip finish merging due to dry_run option");
-                    return true;
-                }
-
-                await this._labelMergeReady();
-
-                if (Config.skipMerge()) {
-                    this._log("skip finish merging due to skip_merge option");
-                    return true;
-                }
-
-                await this._finishMerging();
-                await this._cleanupMerged();
-                // merging finished successfully
-                return true;
-            } else if (checkTagResult === 'wait') {
-                // still waiting for auto checks
-                this.inMerge = true;
-                return true;
-            } else {
-                // skip this PR
-                assert(checkTagResult === 'skip');
-                return true;
-            }
-        } catch (err) {
-            this._logError(err, "MergeContext.process");
-            await this._cleanupUnexpectedError();
-            return false;
+            await this._finishMerging();
+            this._inProcess = false;
+            await this._cleanupMerged();
+        } else if (checkTagResult === 'wait') {
+            // still waiting for auto checks
+            this.autoStarted = true;
+            this._inProcess = true;
+        } else {
+            // skip this PR
+            assert(checkTagResult === 'skip');
         }
     }
 
-    // Checks whether the current PR has merge tag.
+    // Tries to load 'merge tag' for the PR.
     async _loadTag() {
        try {
            this._tagSha = await getReference(this.mergingTag());
@@ -261,27 +263,32 @@ class MergeContext {
        }
     }
 
-    // Checks whether the current PR has 'merge tag' (i.e., merge in progress).
+    // Examines 'merge tag' for the PR.
     // Returns one of:
-    // 'start': the tag does not exist or is stale; should start merging from scratch.
+    // 'start': the tag is stale; should start merging from scratch.
     // 'wait': the tag tests are in progress; should wait for their completion.
     // 'continue': the tag tests completed with success; should finish merging.
-    // 'skip': the tag tests failed, the tag is no stale; do not process this PR.
+    // 'skip': the tag tests failed but the tag is not stale; do not process this PR.
     async _checkTag() {
         assert(this._tagSha);
 
-        const contexts = await getProtectedBranchRequiredStatusChecks(this.prBaseBranch());
-
-        const commitStatus = await getStatuses(this._tagSha, contexts);
+        const commitStatus = await this._checkStatuses(this._tagSha);
 
         if (commitStatus === 'pending') {
             this._log("waiting for more auto_branch statuses completing");
+            // Usually it is not necessary to adjust auto_branch here because it
+            // should already point to the merging tag. This covers uncommon
+            // situations when there is an old tag and its statuses have been
+            // updated somehow  while the bot was off (e.g., somebody forced
+            // CI system for this tag while the bot was off).
             if (!Config.dryRun())
                 this._autoSha = await updateReference(Config.autoBranch(), this._tagSha, true);
             return 'wait';
         } else if ( commitStatus === 'success') {
             this._log("auto_branch checks succeeded");
-            this._autoSha = await updateReference(Config.autoBranch(), this._tagSha, true);
+            // Ensure that auto_branch points to us.
+            if (!Config.dryRun())
+                this._autoSha = await updateReference(Config.autoBranch(), this._tagSha, true);
             return 'continue';
         } else {
             assert(commitStatus === 'error');
@@ -326,10 +333,8 @@ class MergeContext {
             return false;
         }
 
-        const collaborators = await getCollaborators();
-        const pushCollaborators = collaborators.filter((c) => { return c.permissions.push === true; });
         // in ms
-        const timeToWait = await getReviews(this.number(), pushCollaborators, this.prAuthor());
+        const timeToWait = await this._checkApproved();
         if (timeToWait === null) // not approved or rejected
             return false;
         else if (timeToWait !== 0) { // approved, but waiting
@@ -337,9 +342,7 @@ class MergeContext {
             return false;
         }
 
-        const contexts = await getProtectedBranchRequiredStatusChecks(this.prBaseBranch());
-
-        const statusOk = await getStatuses(this.prHeadSha(), contexts);
+        const statusOk = await this._checkStatuses(this.prHeadSha());
         if (!statusOk) {
             this._log("statuses not succeeded.");
             return false;
@@ -369,7 +372,7 @@ class MergeContext {
         this._autoSha = await updateReference(Config.autoBranch(), this._tagSha, true);
     }
 
-    // Does 'ff' merge base into auto_branch.
+    // fast-forwards base into auto_branch
     async _finishMerging() {
         assert(this._autoSha);
         this._log("finish merging...");
@@ -379,7 +382,7 @@ class MergeContext {
         } catch (e) {
             if (e.unprocessable()) {
                 this._log("FF merge failed");
-                this.mergeFailed = true;
+                this.ffMergeFailed = true;
             }
             throw e;
         }
@@ -392,13 +395,16 @@ class MergeContext {
         await updatePR(this.number(), 'closed');
         await deleteReference(this.mergingTag());
         const baseSha = await getReference(this.prBaseBranchPath());
+        // auto branch now points to the base HEAD
         await updateReference(Config.autoBranch(), baseSha, true);
     }
 
     // does not throw
-    async _cleanupUnexpectedError() {
-        if (this === null)
+    async cleanupUnexpectedError() {
+        if (!this._inProcess || Config.dryRun()) {
+            this._log("cleanup not required");
             return;
+        }
         this._log("cleanup on unexpected error...");
         // delete merging tag, if exists
         try {
@@ -406,22 +412,125 @@ class MergeContext {
         } catch (e) {
             // For the record: Github returns 422 error if there is no such
             // reference 'refs/:sha', and 404 if there is no such tag 'tags/:tag'.
+            // TODO: once I saw that both errors can be returned, so looks
+            // like this Github behavior is unstable.
             if (e.notFound())
                 this._log(this.mergingTag() + "tag not found");
             else
-                this._logError(e, "cleanupUnexpectedError");
+                this.logError(e, "MergeContext.cleanupUnexpectedError");
         }
 
         try {
             await this._labelMergeFailed();
         } catch (e) {
-            this._logError(e, "cleanupUnexpectedError");
+            this.logError(e, "MergeContext.cleanupUnexpectedError");
         }
     }
 
     _refresh(pr) {
         assert(pr.number === this._pr.number);
         this._pr = pr;
+    }
+
+    // If approved, returns number for milliseconds to wait (>=0),
+    // where returned zero means that no waiting required.
+    // If not approved (or rejected), returns null.
+    async _checkApproved() {
+        const collaborators = await getCollaborators();
+        const pushCollaborators = collaborators.filter((c) => { return c.permissions.push === true; });
+
+        let reviews = await getReviews(this.number());
+
+        const prAgeMs = new Date() - new Date(this.createdAt());
+        const rejectPeriodMs = Config.rejectPeriod() * MsPerDay;
+        if (prAgeMs < rejectPeriodMs) {
+            this._log("in reject period");
+            return rejectPeriodMs - prAgeMs;
+        }
+
+        // An array of [{reviewer, date, status}] elements,
+        // where 'reviewer' is a core developer, 'date' the review date and 'status' is either
+        // 'approved' or 'changes_requested'.
+        let usersVoted = [];
+        if (pushCollaborators.find((el) => { return el.login === this.prAuthor(); }))
+            usersVoted.push({reviewer: this.prAuthor(), date: this.createdAt(), state: 'approved'});
+
+        // Reviews are returned in chronological order; the list may contain several
+        // reviews from the same reviewer, so the actual 'state' is the most recent one.
+        for (let review of reviews) {
+            if (pushCollaborators.find((el) => { return el.login === review.user.login; }) === undefined)
+                continue;
+
+            const reviewState = review.state.toLowerCase();
+            let approval = usersVoted.find((el) => { return el.reviewer === review.user.login; });
+
+            if (reviewState === 'approved' || reviewState === 'changes_requested') {
+                if (approval !== undefined) {
+                    approval.state = reviewState;
+                    approval.date = review.submitted_at;
+                } else {
+                    usersVoted.push({reviewer: review.user.login, date: review.submitted_at, state: reviewState});
+                }
+            }
+        }
+
+        const userRequested = usersVoted.find((el) => { return el.state === 'changes_requested'; });
+        if (userRequested !== undefined) {
+            this._log("changes requested by " + userRequested.reviewer);
+            return null;
+        }
+
+        let usersApproved = usersVoted.filter((u) => { return u.state !== 'changes_requested'; });
+
+        let defaultMsg = "approved by " + usersApproved.length + " core developer(s)";
+        if (usersApproved.length === 0) {
+            this._log("not approved");
+            return null;
+        } else if (usersApproved.length >= Config.approvalsNumber()) {
+            this._log(defaultMsg);
+            return 0;
+        } else {
+            assert(usersApproved.length < Config.approvalsNumber());
+            usersApproved.sort((u1, u2) => { return new Date(u1.date) - new Date(u2.date); });
+
+            let baseline = new Date();
+            baseline.setDate(baseline.getDate() - Config.approvalPeriod());
+            let oldestApproval = new Date(usersApproved[0].date);
+            if (new Date(oldestApproval) <= baseline) {
+                this._log(defaultMsg + ", approval period finished");
+                return 0;
+            } else {
+                this._log(defaultMsg + ", in approval period");
+                return oldestApproval - baseline;
+            }
+        }
+    }
+
+    // returns one of:
+    // 'pending' if some of required checks are 'pending'
+    // 'success' if all of required are 'success'
+    // 'error' otherwise
+    async _checkStatuses(ref) {
+
+        const requiredContexts = await getProtectedBranchRequiredStatusChecks(this.prBaseBranch());
+        let statuses = await getStatuses(ref);
+        // An array of [{context, state}] elements
+        let checks = [];
+        // Get actual statuses, keeping in mind that they are returned
+        // in reverse chronological order.
+        for (let st of statuses) {
+            if (!requiredContexts.find(el => el.context === st.context))
+                continue;
+            if (!checks.find(el => el.context === st.context))
+                checks.push({context: st.context, state: st.state});
+        }
+
+        if (checks.find(check => check.state === 'pending'))
+            return 'pending';
+
+        const prevLen = checks.length;
+        checks = checks.filter(check => check.state === 'success');
+        return prevLen === checks.length ? 'success' : 'error';
     }
 
     // Label manipulation methods
@@ -516,6 +625,8 @@ class MergeContext {
 
     mergingTag() { return "tags/" + MergingTag + this._pr.number; }
 
+    createdAt() { return this._pr.created_at; }
+
     tagsConsistent() {
         if (this._autoSha !== null)
             return this._autoSha === this._tagSha;
@@ -528,14 +639,10 @@ class MergeContext {
         Logger.info("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
     }
 
-    _logError(err, details) {
-        let msg = this.toString() + " ";
-        if (details !== undefined)
-            msg += details + ": ";
-        msg += err.toString();
-        if ('stack' in err)
-            msg += " " + err.stack.toString();
-        Logger.error(msg);
+    logError(err, context) {
+        assert(context);
+        let msg = this.toString() + " " + context;
+        logError(err, msg);
     }
 
     toString() {
@@ -569,14 +676,23 @@ class MergeStep {
             mergeContext = await this._next();
         while (mergeContext) {
             this.total++;
-            if (!(await mergeContext.process()))
+            try {
+                await mergeContext.process();
+                if (mergeContext.autoStarted) {
+                    // will wait for auto checks
+                    break;
+                }
+                // should re-run when ff merge failed because of a base change
+                if (mergeContext.ffMergeFailed)
+                    Scheduler.rerun = true;
+            } catch (e) {
                 this.errors++;
-            if (mergeContext.inMerge)
-                break;
-            // Should re-run when ff merge failed(e.g., base changed)
-            // and this is the last PR in the list.
-            if (mergeContext.mergeFailed && !this.prList.length)
-                Scheduler.rerun = true;
+                await mergeContext.cleanupUnexpectedError();
+                if (this.prList.length)
+                    mergeContext.logError(e, "MergeContext.process");
+                else
+                    throw e;
+            }
             mergeContext = await this._next();
         }
     }
@@ -793,17 +909,14 @@ function requestPR(prNum) {
                 reject(new ErrorContext("PR was unexpectedly closed", requestPR.name, {pr: prNum}));
                 return;
             }
-            const result = {mergeable: pr.data.mergeable};
+            const result = {number: pr.data.number};
             logApiResult(requestPR.name, params, result);
             resolve(pr.data);
        });
    });
 }
 
-// If approved, returns number for milliseconds to wait (>=0),
-// zero means no waiting required.
-// If not approved (or rejected), returns null.
-function getReviews(prNum, pushCollaborators, prAuthor) {
+function getReviews(prNum) {
     let params = commonParams();
     params.number = prNum;
     return new Promise( (resolve, reject) => {
@@ -813,81 +926,12 @@ function getReviews(prNum, pushCollaborators, prAuthor) {
                 reject(new ErrorContext(err, getReviews.name, params));
                 return;
             }
-
-            let approvals = {};
-            let approveDate = null;
-            for (let review of res.data) {
-                // Reviews are returned in chronological order
-                const reviewState = review.state.toLowerCase();
-                if (reviewState === "approved") {
-                    approvals[review.user.login] = true;
-                    if (approveDate === null) {
-                        const msPassed = new Date() - new Date(review.submitted_at);
-                        if (msPassed/MsPerDay < Config.rejectPeriod()) {
-                            logApiResult(getReviews.name, params, {approved: "approved(in reject period"});
-                            resolve(Config.rejectPeriod() * MsPerDay - msPassed);
-                            return;
-                        }
-                    }
-                    approveDate = review.submitted_at;
-                }
-                else if (reviewState === "changes_requested") {
-                    approvals[review.user.login] = false;
-                }
-            }
-
-            let approvalsNum = 0;
-            let rejectedBy = null;
-            for (let pushCollaborator of pushCollaborators) {
-                 if (prAuthor === pushCollaborator.login) {
-                     approvalsNum++;
-                     continue;
-                 }
-                 const voted = Object.keys(approvals).find((key) => { return key === pushCollaborator.login; }) !== undefined;
-                 if (voted) {
-                    if (approvals[pushCollaborator.login] === true)
-                       approvalsNum++;
-                    else {
-                       rejectedBy = pushCollaborator.login;
-                       break;
-                    }
-                 }
-            }
-
-            let msToWait = null;
-            let desc = "approved by " + approvalsNum + " core developer(s)";
-            if (rejectedBy !== null)
-                desc = "rejected by " + rejectedBy;
-            else if (approvalsNum === 0) {
-                desc = "not approved";
-            } else if (approvalsNum < Config.approvalsNumber()) {
-                assert(approveDate !== null);
-                const date = new Date(approveDate);
-                let beforeDate = new Date();
-                beforeDate.setDate(beforeDate.getDate() - Config.approvalPeriod());
-                if (date <= beforeDate) {
-                    msToWait = 0;
-                    desc += ", approval period finished";
-                } else {
-                    msToWait = date - beforeDate;
-                    desc += ", in approval period";
-                }
-            } else {
-                // can be submitted immediately
-                assert(approvals >= Config.approvalsNumber());
-                msToWait = 0;
-            }
-
-            logApiResult(getReviews.name, params, {approval: desc});
-            resolve(msToWait);
+            resolve(res.data);
         });
     });
 }
 
-// returns 'pending' if some of required checks are 'pending'
-// returns 'success' if all of required are 'success'
-// returns 'error' otherwise
-function getStatuses(ref, requiredContexts) {
+function getStatuses(ref) {
     let params = commonParams();
     params.ref = ref;
     return new Promise( (resolve, reject) => {
@@ -897,32 +941,9 @@ function getStatuses(ref, requiredContexts) {
                 reject(new ErrorContext(err, getStatuses.name, params));
                 return;
             }
-            // Statuses are returned in reverse chronological order.
-            let checks = {};
-            for (let st of res.data) {
-                if (!(st.context in checks)) {
-                    if (st.state !== 'pending')
-                        checks[st.context] = (st.state === 'success');
-                }
-            }
-
-            let result = null;
-            for (let requiredContext of requiredContexts) {
-                 if (Object.keys(checks).find((key) => { return key === requiredContext; }) === undefined) {
-                    result = 'pending';
-                    break;
-                 }
-            }
-            if (!result) {
-                if (Object.values(checks).find((c) => { return c === false; }) === undefined)
-                    result = 'success';
-                else
-                    result = 'error';
-            }
-
-            logApiResult(getStatuses.name, params, {checks: result});
-            resolve(result);
-       });
+            logApiResult(getStatuses.name, params, {statuses: res.data.length});
+            resolve(res.data);
+        });
     });
 }
 

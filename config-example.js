@@ -10,6 +10,6 @@
     "skip_merge": false,
     "auto_branch": "heads/auto_branch",
     "approvals_number": 1,
-    "approval_period": 10,
+    "approval_period": 8,
     "reject_period": 2
 }
