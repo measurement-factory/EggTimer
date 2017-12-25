@@ -77,6 +77,9 @@ function logError(err, context) {
 class RunScheduler {
 
     constructor() {
+        // Essentially a (key,value) list:
+        // key: PR number
+        // value: a timer id, returned by setTimeout()
         this._prTimeouts = {};
         this.rerun = false;
         this.running = false;
@@ -146,7 +149,7 @@ class RunScheduler {
     }
 
     _planned(prNum) {
-        return Object.keys(this._prTimeouts).find((num) => { return prNum === num; }) !== undefined;
+        return Object.keys(this._prTimeouts).find(num => prNum === num) !== undefined;
     }
 
     _unplan(prNum) {
@@ -437,7 +440,7 @@ class MergeContext {
     // If not approved (or rejected), returns null.
     async _checkApproved() {
         const collaborators = await getCollaborators();
-        const pushCollaborators = collaborators.filter((c) => { return c.permissions.push === true; });
+        const pushCollaborators = collaborators.filter(c => c.permissions.push === true);
 
         let reviews = await getReviews(this.number());
 
@@ -452,17 +455,17 @@ class MergeContext {
         // where 'reviewer' is a core developer, 'date' the review date and 'status' is either
         // 'approved' or 'changes_requested'.
         let usersVoted = [];
-        if (pushCollaborators.find((el) => { return el.login === this.prAuthor(); }))
+        if (pushCollaborators.find(el => el.login === this.prAuthor()))
             usersVoted.push({reviewer: this.prAuthor(), date: this.createdAt(), state: 'approved'});
 
         // Reviews are returned in chronological order; the list may contain several
         // reviews from the same reviewer, so the actual 'state' is the most recent one.
         for (let review of reviews) {
-            if (pushCollaborators.find((el) => { return el.login === review.user.login; }) === undefined)
+            if (!pushCollaborators.find(el => el.login === review.user.login))
                 continue;
 
             const reviewState = review.state.toLowerCase();
-            let approval = usersVoted.find((el) => { return el.reviewer === review.user.login; });
+            let approval = usersVoted.find(el => el.reviewer === review.user.login);
 
             if (reviewState === 'approved' || reviewState === 'changes_requested') {
                 if (approval !== undefined) {
@@ -474,13 +477,13 @@ class MergeContext {
             }
         }
 
-        const userRequested = usersVoted.find((el) => { return el.state === 'changes_requested'; });
+        const userRequested = usersVoted.find(el => el.state === 'changes_requested');
         if (userRequested !== undefined) {
             this._log("changes requested by " + userRequested.reviewer);
             return null;
         }
 
-        let usersApproved = usersVoted.filter((u) => { return u.state !== 'changes_requested'; });
+        let usersApproved = usersVoted.filter(u => u.state !== 'changes_requested');
 
         let defaultMsg = "approved by " + usersApproved.length + " core developer(s)";
         if (usersApproved.length === 0) {
@@ -537,7 +540,7 @@ class MergeContext {
 
     async hasLabel(label) {
         const labels = await getLabels(this.number());
-        return ((labels.find((lbl) => { return (lbl.name === label); })) !== undefined);
+        return labels.find(lbl => lbl.name === label) !== undefined;
     }
 
     async removeLabel(label) {
@@ -710,7 +713,7 @@ class MergeStep {
         const autoSha = await getReference(Config.autoBranch());
         let tags = null;
         try {
-           tags = await getTags();
+            tags = await getTags();
         } catch (e) {
             if (e.notFound()) {
                 Logger.info("No tags found");
@@ -720,13 +723,15 @@ class MergeStep {
         }
 
         let prNum = null;
-        tags.find( (tag) => {
+        for (let tag of tags) {
             if (tag.object.sha === autoSha) {
                 const matched = tag.ref.match(TagRegex);
-                if (matched)
+                if (matched) {
                     prNum = matched[2];
+                    break;
+                }
             }
-        });
+        }
 
         if (prNum === null) {
             Logger.info("No merging PR found.");
@@ -746,7 +751,7 @@ class MergeStep {
         let context = new MergeContext(autoPr, autoSha, autoSha);
         const prevLen = this.prList.length;
         // remove the loaded PR from the global list
-        this.prList = this.prList.filter((pr) => { return pr.number !== context.number(); });
+        this.prList = this.prList.filter(pr => pr.number !== context.number());
         assert(prevLen - 1 === this.prList.length);
         return context;
     }
@@ -1000,6 +1005,7 @@ function getReference(ref) {
     });
 }
 
+// get all available repository tags
 function getTags() {
     let params = commonParams();
     return new Promise( (resolve, reject) => {
