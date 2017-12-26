@@ -206,7 +206,7 @@ class MergeContext {
                 return false;
 
             if (Config.dryRun()) {
-                this._log("skip start merging due to dry_run option");
+                this._warnDryRun("start merging");
                 return false;
             }
             await this._startMerging();
@@ -218,14 +218,14 @@ class MergeContext {
 
         if (checkTagResult === 'continue') {
             if (Config.dryRun()) {
-                this._log("skip finish merging due to dry_run option");
+                this._warnDryRun("finish merging");
                 return true;
             }
 
             await this._labelMergeReady();
 
             if (Config.skipMerge()) {
-                this._log("skip finish merging due to skip_merge option");
+                this._warnDryRun("finish merging", "skip_merge");
                 return true;
             }
 
@@ -383,7 +383,7 @@ class MergeContext {
     // does not throw
     async cleanupUnexpectedError() {
         if (Config.dryRun()) {
-            this._log("cleanup not required due to dry_run");
+            this._warnDryRun("cleanup on error");
             return;
         }
         this._log("cleanup on unexpected error...");
@@ -610,6 +610,11 @@ class MergeContext {
         Logger.info("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
     }
 
+    _warnDryRun(msg, opt) {
+        const option = opt === undefined ? "dry_run" : opt;
+        this._log("skip " + msg + " due to " + option + " option");
+    }
+
     logError(err, context) {
         assert(context);
         let msg = this.toString() + " " + context;
@@ -647,6 +652,7 @@ class MergeStep {
             this.total++;
             try {
                 if (await mergeContext.process()) {
+                    Logger.info("Still processing: " + mergeContext.toString());
                     // still in-process, not ready to start the next one
                     break;
                 }
@@ -945,6 +951,7 @@ function getCommit(sha) {
 }
 
 function createCommit(treeSha, message, parents) {
+    assert(!Config.dryRun());
     let params = commonParams();
     params.tree = treeSha;
     params.message = message;
@@ -997,6 +1004,7 @@ function getTags() {
 }
 
 function createReference(sha, ref) {
+    assert(!Config.dryRun());
     let params = commonParams();
     params.sha = sha;
     params.ref = ref;
@@ -1015,6 +1023,7 @@ function createReference(sha, ref) {
 }
 
 function updateReference(ref, sha, force) {
+    assert(!Config.dryRun());
     let params = commonParams();
     params.ref = ref;
     params.sha = sha;
@@ -1034,6 +1043,7 @@ function updateReference(ref, sha, force) {
 }
 
 function deleteReference(ref) {
+    assert(!Config.dryRun());
     let params = commonParams();
     params.ref = ref;
     return new Promise( (resolve, reject) => {
@@ -1051,6 +1061,7 @@ function deleteReference(ref) {
 }
 
 function updatePR(prNum, state) {
+   assert(!Config.dryRun());
    let params = commonParams();
    params.state = state;
    params.number = prNum;
@@ -1069,6 +1080,7 @@ function updatePR(prNum, state) {
 }
 
 function addLabels(params) {
+   assert(!Config.dryRun());
    return new Promise( (resolve, reject) => {
      Github.authenticate(GithubAuthentication);
      Github.issues.addLabels(params, (err, res) => {
@@ -1084,6 +1096,7 @@ function addLabels(params) {
 }
 
 function removeLabel(label, prNum) {
+    assert(!Config.dryRun());
     let params = commonParams();
     params.number = prNum;
     params.name = label;
