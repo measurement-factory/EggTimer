@@ -6,15 +6,15 @@ const assert = require('assert');
 const endOfLine = require('os').EOL;
 const bunyan = require('bunyan');
 
-// FF merge failed
+// fast-forward merge failed
 const MergeFailedLabel = "S-merge-failed";
 // Some of required auto checks failed
 const AutoChecksFailedLabel = "S-autochecks-failed";
-// FF merge succeeded
+// fast-forward merge succeeded
 const MergedLabel = "S-merged";
 // Merge started (tag and auto branch successfully adjusted)
 const MergingLabel = "S-merging";
-// Merge succeeded up to FF step. For testing purpose.
+// Merge succeeded up to fast-forward step. For testing purpose.
 const MergeReadyLabel = "S-merge-ready";
 
 const MergingTagName = "T-merging-PR";
@@ -268,15 +268,16 @@ class MergeContext {
         const commitStatus = await this._checkStatuses(this._tagSha);
 
         if (commitStatus === 'pending') {
-            this._log("waiting for more auto_branch statuses completing");
+            this._log("waiting for more auto checks completing");
             // TODO: log whether that auto_branch points to us.
             return 'wait';
         } else if ( commitStatus === 'success') {
-            this._log("auto_branch checks succeeded");
+            this._log("auto checks succeeded");
             // TODO: log whether that auto_branch points to us.
             return 'continue';
         } else {
             assert(commitStatus === 'failure');
+            this._log("auto checks failed");
             const tagCommit = await getCommit(this._tagSha);
             const tagPr = await getPR(this.number(), true); // to force Github refresh the PR's 'merge' commit
             assert(tagPr.number === this.number());
@@ -285,12 +286,12 @@ class MergeContext {
 
             let ret = 'skip';
             if (tagCommit.treeSha !== prCommit.treeSha) {
-                this._log("merge commit has changed since last failed attempt");
+                this._log("will re-try: merge commit has changed since last failed auto checks");
                 if (!Config.dryRun())
                     await deleteReference(this.mergingTag());
                 ret = 'start';
             } else {
-                let msg = "merge commit has not changed since last failed attempt";
+                let msg = "will not re-try: merge commit has not changed since last failed auto checks";
                 // the base branch could be changed but resulting with new conflicts,
                 // merge commit is not updated then
                 if (tagPr.mergeable !== true)
@@ -331,7 +332,7 @@ class MergeContext {
 
         const commitStatus = await this._checkStatuses(this.prHeadSha());
         if (commitStatus !== 'success') {
-            this._log("statuses not succeeded.");
+            this._log("commit status is " + commitStatus);
             return false;
         }
 
@@ -367,7 +368,7 @@ class MergeContext {
             await updateReference(this.prBaseBranchPath(), this._tagSha, false);
         } catch (e) {
             if (e.unprocessable()) {
-                this._log("FF merge failed");
+                this._log("fast-forwarding failed");
                 this.ffMergeFailed = true;
             }
             throw e;
@@ -496,7 +497,7 @@ class MergeContext {
         // We treat both 'failure' and 'error' as an 'error'.
         let combinedStatus = await getStatuses(ref);
         if (requiredContexts.length === 0) {
-            this.logError("no required checks found");
+            this.logError("no required contexts found");
             // rely on all available checks then
             return combinedStatus.state;
         }
@@ -505,11 +506,11 @@ class MergeContext {
         let requiredChecks = [];
         // filter out non-required checks
         for (let st of combinedStatus.statuses) {
-            if (requiredContexts.find(el => el.context === st.context))
+            if (requiredContexts.find(el => el === st.context))
                 requiredChecks.push({context: st.context, state: st.state});
         }
 
-        if (requiredChecks.length < requiredChecks.length || requiredChecks.find(check => check.state === 'pending'))
+        if (requiredChecks.length < requiredContexts.length || requiredChecks.find(check => check.state === 'pending'))
             return 'pending';
 
         const prevLen = requiredChecks.length;
@@ -805,7 +806,7 @@ class ErrorContext {
     }
 
     // 422 (unprocessable entity).
-    // E.g., FF merge failure returns this error.
+    // E.g., fast-forward failure returns this error.
     unprocessable() {
         if ('code' in this._err)
             return this._err.code === 422;
