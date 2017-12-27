@@ -71,8 +71,10 @@ let Logger;
 function logError(err, context) {
     assert(context);
     let msg = context + ": " + err.toString();
-    if ('stack' in err)
-        msg += " " + err.stack.toString();
+    if (Object.getPrototypeOf(err) === Object.prototype) {
+        if ('stack' in err)
+            msg += " " + err.stack.toString();
+    }
     Logger.error(msg);
 }
 
@@ -112,16 +114,16 @@ class RunScheduler {
 
     // prNum (if provided) corresponds to a PR, scheduled this 'run'
     async run(prNum) {
-        Logger.info("running...");
-
         if (prNum !== undefined)
             this._unplan(prNum);
 
         if (this.running) {
+            Logger.info("Already running, planning rerun.");
             this.rerun = true;
             return;
         }
 
+        Logger.info("running...");
         this.running = true;
         do {
             let step = null;
@@ -274,7 +276,7 @@ class MergeContext {
             // TODO: log whether that auto_branch points to us.
             return 'continue';
         } else {
-            assert(commitStatus === 'error');
+            assert(commitStatus === 'failure');
             const tagCommit = await getCommit(this._tagSha);
             const tagPr = await getPR(this.number(), true); // to force Github refresh the PR's 'merge' commit
             assert(tagPr.number === this.number());
@@ -492,22 +494,27 @@ class MergeContext {
         // https://developer.github.com/v3/repos/statuses/#get-the-combined-status-for-a-specific-ref
         // state is one of 'failure', 'error', 'pending' or 'success'.
         // We treat both 'failure' and 'error' as an 'error'.
-        let statuses = await getStatuses(ref);
+        let combinedStatus = await getStatuses(ref);
+        if (requiredContexts.length === 0) {
+            this.logError("no required checks found");
+            // rely on all available checks then
+            return combinedStatus.state;
+        }
 
         // An array of [{context, state}] elements
         let requiredChecks = [];
         // filter out non-required checks
-        for (let st of statuses) {
+        for (let st of combinedStatus.statuses) {
             if (requiredContexts.find(el => el.context === st.context))
                 requiredChecks.push({context: st.context, state: st.state});
         }
 
-        if (requiredChecks.find(check => check.state === 'pending'))
+        if (requiredChecks.length < requiredChecks.length || requiredChecks.find(check => check.state === 'pending'))
             return 'pending';
 
         const prevLen = requiredChecks.length;
         requiredChecks = requiredChecks.filter(check => check.state === 'success');
-        return prevLen === requiredChecks.length ? 'success' : 'error';
+        return prevLen === requiredChecks.length ? 'success' : 'failure';
     }
 
     // Label manipulation methods
@@ -928,7 +935,7 @@ function getStatuses(ref) {
                 return;
             }
             logApiResult(getStatuses.name, params, {statuses: res.data.statuses.length});
-            resolve(res.data.statuses);
+            resolve(res.data);
         });
     });
 }
