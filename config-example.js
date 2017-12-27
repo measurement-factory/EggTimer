@@ -9,7 +9,7 @@
     "dry_run": false,
     "skip_merge": false,
     "auto_branch": "heads/auto_branch",
-    "approvals_number": 1,
-    "approval_period": 8,
+    "approvals_number": 2,
+    "approval_period": 10,
     "reject_period": 2
 }

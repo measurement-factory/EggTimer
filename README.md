@@ -154,11 +154,11 @@ explanation of the fields:
 *repo* | Github repository name. | -
 *owner* | The owner(organization) of the repository. | -
 *dry_run*| A testing mode when the bot operates in a 'read-only' manner, selecting PRs for merge but skipping further merging steps. If 'true', no changes in PRs are performed. | false
-*skip_merge*| A testing mode, when the bot skips the last step ( fast-forward merge base branch (usually master) into the auto_branch) | false
+*skip_merge*| A testing mode, when the bot skips the last step ( fast-forwarding base branch (usually master) into the auto_branch) | false
 *auto_branch* | The name of the auto branch. | heads/auto_branch
-*approval_period* | For the given PR: how many days the bot will wait before merge attempt | 8
-*approvals_number* | The minimal number of 'core' developers required for a PR to merge it without awaiting 'approval_period' | 2
-*reject_period*| For the given PR: how many days, starting from the PR first approval of a core developer, the bot will wait before proceeding | 2
+*approval_period* | For the given PR: how many days, starting from the first approval date, the bot will wait before merge attempt | 10
+*approvals_number* | The minimal number of 'core' developers required for a PR to be merged just after 'reject_period' ('approval_period' does not matter) | 2
+*reject_period*| For the given PR: how many days, starting from the PR creation date, the bot will not merge this PR | 2
 
 
 ### Start the bot
