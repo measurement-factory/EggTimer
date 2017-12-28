@@ -156,7 +156,7 @@ explanation of the fields:
 *dry_run*| A testing mode when the bot operates in a 'read-only' manner, selecting PRs for merge but skipping further merging steps. If 'true', no changes in PRs are performed. | false
 *skip_merge*| A testing mode, when the bot skips the last step ( fast-forwarding base branch (usually master) into the auto_branch) | false
 *auto_branch* | The name of the auto branch. | heads/auto_branch
-*approval_period* | For the given PR: how many days, starting from the first approval date, the bot will wait before merge attempt | 10
+*approval_period* | For the given PR: how many days, starting from the PR creation date, the bot will wait before merge attempt | 10
 *approvals_number* | The minimal number of 'core' developers required for a PR to be merged just after 'reject_period' ('approval_period' does not matter) | 2
 *reject_period*| For the given PR: how many days, starting from the PR creation date, the bot will not merge this PR | 2
 

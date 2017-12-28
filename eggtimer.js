@@ -470,18 +470,13 @@ class MergeContext {
             return 0;
         } else {
             assert(usersApproved.length < Config.approvalsNumber());
-            usersApproved.sort((u1, u2) => { return new Date(u1.date) - new Date(u2.date); });
-
-            let baseline = new Date();
-            baseline.setDate(baseline.getDate() - Config.approvalPeriod());
-            let oldestApproval = new Date(usersApproved[0].date);
-            if (new Date(oldestApproval) <= baseline) {
-                this._log(defaultMsg + ", approval period finished");
-                return 0;
-            } else {
+            const approvalPeriodMs = Config.approvalPeriod() * MsPerDay;
+            if (prAgeMs < approvalPeriodMs) {
                 this._log(defaultMsg + ", in approval period");
-                return oldestApproval - baseline;
+                return approvalPeriodMs - prAgeMs;
             }
+            this._log(defaultMsg + ", approval period finished");
+            return 0;
         }
     }
 
@@ -778,6 +773,12 @@ WebhookHandler.on('status', (ev) => {
     Scheduler.run();
 });
 
+// https://developer.github.com/v3/activity/events/types/#pushevent
+WebhookHandler.on('push', (ev) => {
+    const e = ev.payload;
+    Logger.info("push event:", e.ref);
+    Scheduler.run();
+});
 
 Scheduler.startup();
 
