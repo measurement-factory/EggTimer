@@ -1,171 +1,256 @@
 # EggTimer
 
-A GitHub webhook driven bot that merges Pull Requests when they're ready.
+EggTimer is a bot that automatically merges GitHub pull requests when
+they are ready. EggTimer is a node.js script and a GitHub webhook.
 
-EggTimer runs as a node script, listening to events (webhooks) from a GitHub
-repository. Eligible events are: 'pull request', 'pull request review' and
-'status'. When the bot starts up or receives one of listed events, it requests
-Github for open PRs and starts processing them.
-
-### PR processing
-
-Generally, a PR processing iteration consists of the following steps:
-
-1. Get open PR list from Github.
-2. Find a PR suitable for merging. Stop processing if there are no more such PRs.
-3. Force CIs to start checking 'merge revision', which is the merged product of the base branch(usually master) and PR branch.
-4. Place 'merge revision' into the HEAD of the base branch, IFF all required CI tests have succeeded.
-5. Go to (2).
-
-In the end of such iteration, all ready-for-merge PRs should be merged.
+Upon startup and when the configured GitHub repository changes, the bot
+finds pull requests that are ready for merging and, one by one, triggers
+CI tests and eventually merges successfully tested PRs. Eligible pull
+requests are merged in FIFO (i.e., ascending PR number) order. Pull
+request eligibility and merging steps are detailed further below.
 
 
-### PR processing details
+## Terminology
 
-#### PR labeling
+* _Merging_: Merging a pull request involves many steps, including
+  automated CI tests, PR labeling, and the target branch update. Do not
+  confuse this general/imprecise term with the atomic action of merging
+  one git branch into another.
 
-For Github users convenience, EggTimer marks in-process PR with several labels, depending on
-the merge step status:
-
-* S-merging, (2) OK.
-* S-autochecks-failed, (3) failed.
-* S-merge-ready, (3) OK.
-* S-merge-failed, (4) failed.
-* S-merged, (4) OK.
-
-Note that all labels, except 'S-merged' have only informational purpose and are
-ignored by the bot (e.g., if they were set manually by a Github user).
+* _Core developer_: From the bot point of view, a core developer is a
+  GitHub user with write access to the configured repository (`config::repo`).
 
 
-#### PR selecting
+## Which pull requests are eligible for merging?
 
- PR is considered as 'ready-for-merge', if all its required statuses are
-'green':
+A pull request is ready for merging if all of the following conditions
+are satisfied:
 
-* The PR has Github 'mergeable' status.
-* All PR required status checks succeeded.
-* The PR is approved by one or more core developers(with repository push rights).
-* The PR is not labeled as 'merged' (S-merged label). Though this is not a standard
-  PR status, this helps to avoid merging of an already merged PR.
+* The PR is open (TODO: Check that a PR closed right _after_ we got a
+  list of PRs will not be merged!)
+* The PR has GitHub 'mergeable' status. TODO: Document how a GitHub user
+  can tell whether a PR has a GitHub 'mergeable' status.
+* All the _required_ checks have succeeded on the (possibly stale) PR
+  branch. GitHub says "All checks have passed" next to a green check
+  mark. TODO: Show the right message screenshot here if possible. TODO:
+  What does GitHub say when an optional check has failed but all the
+  required ones have passed?
+* The PR is approved for merging (see below for voting rules).
+* The PR does not have an `S-merged` label.
 
-
-#### PR approving
-
-The bot essentially implements the official voting
-[requirements](https://wiki.squid-cache.org/MergeProcedure), with some
-differences:
-
-* For reliability sake, only approvals of core developers are considered.
-
-* In order to let all interested core developers to review a PR, there is a
-  so-called 'rejection period'. This period starts from the PR creation date
-  date and lasts for 2 days(by default). The bot will not attempt to merge
-  the PR during this period.
-
-* The bot will merge PR just after 'rejection period' if it was approved by
-  several core developers (>=2). If PR author is a core develper, its vote
-  is automatically appended.
-
-* One negative vote by a core developer blocks the merge until resolved
-  (unchanged, placed here for completeness).
-
-* PRs with only one core developer approval (and no rejections) will be
-  accepted after a 8 days period (starting from the end of 'reject period').
-  Overall 10 days delay is preserved.
+Satisfying the above conditions results in an attempt to merge the pull
+request (in FIFO order), but PR merging may still fail.
 
 
-#### PR merging
+## Pull request merging algorithm
 
-If all 'merge revision' checks were successful, the revision is placed into the
-base's HEAD (base is fast-forwarded into it), and the bot closes this PR. Note
-that Github is not able to determine that PR was merged in a way, other from
-standard Github 'merge button', and does not mark the PR with 'merged' status.
-Instead, it shows a confusing message:
+Each open pull request is processed according to the following
+algorithm:
 
-```
-This pull request is closed, but the 'branch' branch has unmerged commits.
-```
+1. Reset the staging (a.k.a. "auto") branch to point at the last commit
+   of the PR target branch (usually "master").
+2. Squash-merge the PR branch into the staging branch, using PR title
+   (with an appended PR number) and the PR description as the commit
+   message. TODO: What happens to long paragraph lines often present in
+   the PR description? We should either reject PRs that have long lines
+   or, if it can be done safely, automatically wrap them using some
+   formatting library.
+3. Test the staging branch. That is, wait for GitHub to report CI test
+   results for the staging branch.
+4. Reset the PR target branch (usually "master") to point at the
+   now-tested commit on the staging branch.
+5. Mark the PR as merged.
+6. Close the PR and remove its tag. Failures at this step are ignored.
 
-As a consequence, an irresponsible user can re-open such already merged PR
-causing more confusion. The 'S-merged' label should help to distinguish such
-situations. What if 'merge revision' checks failed? A PR user will know that,
-noticing 'S-autochecks-failed' label and examining 'merge revision' checks
-statuses (showed on PR's conversation tab). The failure reason may vary and
-be unrelated to the PR itself (e.g., a problem in the base branch,
-revealed after merging). Obviously, there is no reason to repeat
-these checks for unchanged code, so the bot will re-attempt merging this PR
-only after 'merge revision' has been changed (i.e., base branch and(or) PR
-branch have been changed).
+XXX: The above is missing the tagging step, with a brief explanation of
+what that tag means and/or why it is needed.
 
+If a bot is killed while executing the above algorithm, it (XXX:
+document what happens. I suspect we redo some of the steps and resume
+execution of other steps, depending on the state, but it is not clear to
+me which steps the bot avoids repeating).
 
-#### Error handling
-
-During its operation, EggTimer can face various 'unexpected' errors, such as
-general network problems, Github errors(e.g., HTTP 500 error) or internal
-configuration errors. In order to eliminate wasting Github API resources and
-logging useless identical error messages, the bot will wait for a period (10
-minutes by default), and then re-try merge iteration.
-
-
-#### Concurrency
-
-Currently, no concurrency is supported, the bot can merge only one PR at a
-time. A being-in-merge PR can not be interrupted by other Github events:
-EggTimer will flag such event and start PR processing iteration only after
-finishing the current one.
+While the bot is merging a pull request, it does not touch other PRs. If
+the bot receives a GitHub event while merging a pull request, then the
+bot re-examines all PRs _after_ it is done merging the current PR. This
+approach simplifies repository state (multiple PRs in various
+intermediate merging steps would easily confuse humans and may overwhelm
+CI) while still allowing the lowest-numbered PR to be merged first
+(among the then-ready PRs).
 
 
-#### Is it safe to restart the bot?
+## Error handling
 
-EggTimer was designed as a stateless PR processing bot, with a possibility to be
-restarted anytime it is needed. It manipulates git repository via Github
-API calls (without cloning), all required information is requested from Github
-during a PR processing iteration. If the bot was terminated for a reason while
-merging a PR and started again, it will search for being-in-merge PR, restore
-its merging context and finish the merging as needed.
+A bot that cannot parse its configuration quits.
 
+When encountering PR-unrelated problems (e.g., network I/O timeouts or
+internal GitHub server errors), the bot sleeps for 10 minutes
+(hard-coded) and then effectively restarts. Only the already parsed
+configuration is preserved across such restarts. XXX: Let's restart
+everything except configuration parsing in this case instead of assuming
+that the global state such as the HTTP server object is still in a good
+working order.
 
-### Configuration
-
-EggTimer is meant to be run as a web server, which is then called by [GitHub's
-webhook framework](https://developer.github.com/webhooks/). Go to your GitHub
-project's Settings-&gt;Webhooks and "add webhook". The correct "payload URL"
-will contain your webserver's hostname, *port*, and *github_webhook_path*
-configuration. "Content type" should be `application/json` and "secret" should
-match your *github_webhook_secret* configuration. The proper webhook events
-needed are `Pull request` and `Pull request review` and `Status`.
-
-Create a config.js, by cloning config-example.js:
-
-```
-cp config-example.js config.js
-```
-
-Then modify the fields to suit your needs. All fields are required. Here is an
-explanation of the fields:
-
- *Field* | *Description* | *default*
- --- | --- | ---
-*github_username* | The GitHub username as which this script will be masquerading. The user needs to have 'push' access to the repository.| -
-*github_token* | An auth token generated for the associated github_username. | -
-*github_webhook_path* | Path to which the EggTimer webserver should respond(this needs to be mirrored on the GitHub webhook configuration). | -
-*github_webhook_secret* | A random secret string to be used here and in the GitHub webhook configuration. | -
-*port* | Port of this webserver. | 7777
-*repo* | Github repository name. | -
-*owner* | The owner(organization) of the repository. | -
-*dry_run*| A testing mode when the bot operates in a 'read-only' manner, selecting PRs for merge but skipping further merging steps. If 'true', no changes in PRs are performed. | false
-*skip_merge*| A testing mode, when the bot skips the last step ( fast-forwarding base branch (usually master) into the auto_branch) | false
-*auto_branch* | The name of the auto branch. | heads/auto_branch
-*approval_period* | For the given PR: how many days, starting from the PR creation date, the bot will wait before merge attempt | 10
-*approvals_number* | The minimal number of 'core' developers required for a PR to be merged just after 'reject_period' ('approval_period' does not matter) | 2
-*reject_period*| For the given PR: how many days, starting from the PR creation date, the bot will not merge this PR | 2
+If a PR processing step fails for PR-specific reasons (e.g., a CI test
+failure), then the bot moves on to the next pull request, marking the
+failed PR if/as needed (see below for PR labels).
 
 
-### Start the bot
+## Pull request labels
 
-This needs to be a publicly accessible server (or accessible from GitHub's webhooks):
+The bot uses the following GitHub labels to mark the current pull
+request state:
+
+* S-merging: The PR is being processed by the bot. The bot eventually
+  replaces this label with one of the other labels below.
+* S-autochecks-failed: Essentially duplicates GitHub "red x" mark for
+  the staging branch commit. The bot removes this label when it notices
+  that the failed checks are no longer fresh/applicable.
+* S-merge-ready: Duplicates GitHub "green check" mark for the staging
+  branch commit. The bot removes this label before it updates the PR
+  target branch. (TODO: Remove due to very short lifetime and being low
+  on information? All S-merged and S-merge-failed PRs are S-merge-ready
+  for a brief moment...)
+* S-merge-failed: Unrecoverable failure other than the staging branch
+  test failure (the latter is marked with `S-autochecks-failed`). The
+  bot ignores this PR until the PR branch or its target branch change.
+  When the bot notices that change, it removes this label.
+* S-merged: The PR was successfully merged (and probably closed). The
+  bot will not attempt to merge this PR again even if it is reopened.
+  The bot never removes this label.
+
+Note that all labels, except `S-merged` are ignored by the bot itself.
+
+TODO: Rename all the remaining labels to form a cohesive set, probably
+with a dedicated prefix like "M-".
+
+
+## Voting and PR approvals
+
+A single negative vote by a core developer disqualifies the pull request
+from automatic merging. If there are no such votes, a PR is considered
+approved for merging if either of the following two conditions is met:
+
+* Fast track: A PR has at least two approvals
+  (`config::sufficient_approvals`) from core developers and has been
+  open for at least 48 hours (`config::voting_delay_min`). The delay
+  gives all core developers a better chance to review the pull request
+  before it gets merged while still supporting a decent development
+  pace.
+
+* Slow burner: A PR has at least one approval
+  (`config::necessary_approvals`) from a core developer and has been
+  open for at least 10 calendar days (`config::voting_delay_max`). The
+  wait limit allows for eventual automated merging of pull requests that
+  failed to attract a lot of attention while still properly vetting the
+  changes.
+
+The bot uses two sources of information when counting votes:
+
+1. GitHub review votes.
+
+2. PR authorship: The PR author is assumed to approve PR code. The bot
+   uses this assumption because GitHub does not allow PR authors to
+   vote, needlessly slowing down PR acceptance.
+
+Allowing a developer to submit a PR without implicitly approving it is a
+missing feature. This feature is especially useful when a core developer
+submits 3rd-party code that they did not have a chance to properly
+review.
+
+Votes by users other than core developers are currently _not_ counted.
+Properly counting such votes is a missing feature.
+
+
+## Bot lifecycle
+
+The bot may be started like any node,js script. For example:
 
 ```
 node eggtimer.js
 ```
 
+XXX: Support specifying bot configuration file name as (the only)
+command line parameter.
+
+The bot can be safely killed and started at any time because it uses the
+public/remote GitHub repository to store PR processing state. The bot
+does not clone the repository.
+
+
+## Configuration
+
+The bot is a GitHub [webhook](https://developer.github.com/webhooks/)
+(i.e., an HTTP server expecting requests from GitHub). To configure your
+GitHub repository to notify the bot, go to Settings-&gt;Webhooks and
+click the "Add webhook" button.
+
+### GitHub configuration
+
+* The "payload URL" is comprised of the "http" scheme, the
+  host name or IP address of the server hosting the bot, bot port (`config::port`), and bot URL path (`config::github_webhook_path`) values.
+* The "Content type" field should be `application/json`.
+* The "secret" field should match bot `config::github_webhook_secret`.
+* The bot needs to receive `Pull request`, `Pull request review`, and `Status` events.
+
+
+### Bot configuration
+
+The bot loads its configuration from `./config.js`. You may use
+`config-example.js` to bootstrap your configuration.
+
+All configuration fields are required (XXX: Why is there a "default" column in the table below then? Rename "default" to example and adjust accordingly?).
+
+*Field* | *Description* | *default*
+--- | --- | ---
+*github_username* | The bot uses this GitHub user account for all GitHub communications, including target branch updates. This user needs to have write access to the repository.| -
+*github_token* | An authentication token generated for the associated `config::github_username`. | -
+*github_webhook_path* | GitHub webhook URL path. | -
+*github_webhook_secret* | A random secret string to be used here and in the GitHub webhook configuration. | -
+*port* | The bot listens for GitHub requests on this TCP port. | 7777
+*repo* | The name of the GitHub repository that the bot should serve. | -
+*owner* | The owner (a person or organization) of the GitHub repository. | -
+*dry_run*| A boolean option to enable read-only, no-modifications mode where the bot logs pull requests selected for merging but skips further merging steps.| false
+*skip_merge*| A boolean option to enable no-final-modifications mode where the bot performs all the merging steps up to (and not including) the target branch update. Eligible PRs are merged into and tested on the staging branch but are never merged into their target branches. | false
+*auto_branch* | The name of the staging branch. | heads/auto_branch
+*necessary_approvals* | The minimal number of "core" developers required for a PR to become eligible for merging. PRs with fewer votes are not merged, regardless of their age. | 2
+*voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. PR age is measured in days from the PR creation time. | 2
+*sufficient_approvals* | The minimal number of core developers required for a PR to be merged fast (i.e., without waiting for `config::voting_delay_max`) | 2
+*voting_delay_max* | The minimum merging age of a PR that has fewer than `config::sufficient_approvals` votes. PR age is measured in days from the PR creation time. | 10
+
+
+## Caveats
+
+### Merging eligibility may change while merging
+
+The bot checks merge eligibility conditions when starting to process a
+given pull request. It is possible that a checked condition changes
+during or after that initial check. There is no guarantee that the bot
+will notice such "late" changes. Similar race conditions exist for
+manual PR merging, of course.
+
+TODO: Should the bot recheck the conditions again after all staging
+branch tests are over?
+
+
+### GitHub does not know that a PR was merged
+
+GitHub does not recognize auto-merged PRs as merged -- it shows the
+following message instead of the purple "Merged" icon (TODO: start this
+paragraph with that icon image):
+
+```
+This pull request is closed, but the ... branch has unmerged commits.
+```
+
+Even with a single-commit PR, the merged commit has a different commit
+message (and often different code!) than the PR branch commit. When
+squash-merge or rebase-merge commits are used, the differences between
+the merged commit SHA and the PR branch SHA prevent GitHub from
+recognizing that the PR was effectively merged. GitHub itself provides
+Squash Merge and Rebase Merge buttons that do not lose merge
+information, but GitHub probably uses some GitHub-specific information
+to track such merged PRs. We failed to find an API to tell GitHub that a
+PR is effectively merged.
+
+TODO: Ask GitHub support for help or request an API enhancement.
