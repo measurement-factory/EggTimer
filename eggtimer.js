@@ -72,7 +72,7 @@ class ConfigOptions {
     loggerCount() { return this._loggerCount; }
 }
 
-const Config = new ConfigOptions('config.js');
+const Config = new ConfigOptions('config.json');
 
 const Logger = bunyan.createLogger({
     name: 'eggtimer',

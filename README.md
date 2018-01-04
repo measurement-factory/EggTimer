@@ -196,8 +196,8 @@ click the "Add webhook" button.
 
 ### Bot configuration
 
-The bot loads its configuration from `./config.js`. You may use
-`config-example.js` to bootstrap your configuration.
+The bot loads its configuration from `./config.json`. You may use
+`config-example.json` to bootstrap your configuration.
 
 All configuration fields are required (XXX: Why is there a "default" column in the table below then? Rename "default" to example and adjust accordingly?).
 
