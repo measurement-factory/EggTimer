@@ -17,8 +17,10 @@ const MergingLabel = "S-merging";
 // Merge succeeded up to fast-forward step. For testing purpose.
 const MergeReadyLabel = "S-merge-ready";
 
-const MergingTagName = "T-merging-PR";
-function MergingTag(prNum) { return "tags/" + MergingTagName + prNum; }
+function MergingTag(prNum) {
+    assert(prNum);
+    return "tags/T-merging-PR" + prNum;
+}
 
 const TagRegex = /(refs\/tags\/.*-PR)(\d+)$/;
 const MsPerHour = 3600 * 1000;
