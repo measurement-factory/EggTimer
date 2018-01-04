@@ -8,11 +8,11 @@ const bunyan = require('bunyan');
 
 // fast-forward merge failed
 const MergeFailedLabel = "S-merge-failed";
-// Some of required auto checks failed
-const AutoChecksFailedLabel = "S-autochecks-failed";
+// Some of required staging checks failed
+const StagingChecksFailedLabel = "S-staging-checks-failed";
 // fast-forward merge succeeded
 const MergedLabel = "S-merged";
-// Merge started (tag and auto branch successfully adjusted)
+// Merge started (tag and staging branch successfully adjusted)
 const MergingLabel = "S-merging";
 // Merge succeeded up to fast-forward step. For testing purpose.
 const MergeReadyLabel = "S-merge-ready";
@@ -34,7 +34,7 @@ class ConfigOptions {
         this._host = conf.host;
         this._port = conf.port;
         this._owner = conf.owner;
-        this._autoBranch = conf.auto_branch;
+        this._stagingBranch = conf.staging_branch;
         this._dryRun = conf.dry_run;
         this._skipMerge = conf.skip_merge;
         this._approvalsNumber = conf.approvals_number;
@@ -60,7 +60,7 @@ class ConfigOptions {
     host() { return this._host; }
     port() { return this._port; }
     owner() { return this._owner; }
-    autoBranch() { return this._autoBranch; }
+    stagingBranch() { return "heads/" + this._stagingBranch + "_branch"; }
     dryRun() { return this._dryRun; }
     skipMerge() { return this._skipMerge; }
     approvalsNumber() { return this._approvalsNumber; }
@@ -200,7 +200,7 @@ const Scheduler = new RunScheduler();
 class MergeContext {
 
     constructor(pr, tSha) {
-        // true when fast-forwarding master into auto_branch fails
+        // true when fast-forwarding master into staging_branch fails
         this.ffMergeFailed = false;
         this._pr = pr;
         this._tagSha = (tSha === undefined) ? null : tSha;
@@ -210,7 +210,7 @@ class MergeContext {
     // Does all required processing for the PR towards merge.
     // Returns 'true' if the PR is still in-process and
     // 'false' when the PR was successfully merged or skipped
-    // due to an error (e.g., failed auto checks).
+    // due to an error (e.g., failed staging checks).
     async process() {
         let checkTagResult = null;
         if (this._tagSha)
@@ -248,7 +248,7 @@ class MergeContext {
             await this._cleanupMerged();
             return false;
         } else if (checkTagResult === 'wait') {
-            // still waiting for auto checks
+            // still waiting for staging checks
             return true;
         } else {
             // skip this PR
@@ -281,16 +281,16 @@ class MergeContext {
         const commitStatus = await this._checkStatuses(this._tagSha);
 
         if (commitStatus === 'pending') {
-            this._log("waiting for more auto checks completing");
-            // TODO: log whether that auto_branch points to us.
+            this._log("waiting for more staging checks completing");
+            // TODO: log whether that staging_branch points to us.
             return 'wait';
         } else if ( commitStatus === 'success') {
-            this._log("auto checks succeeded");
-            // TODO: log whether that auto_branch points to us.
+            this._log("staging checks succeeded");
+            // TODO: log whether that staging_branch points to us.
             return 'continue';
         } else {
             assert(commitStatus === 'failure');
-            this._log("auto checks failed");
+            this._log("staging checks failed");
             const tagCommit = await getCommit(this._tagSha);
             const tagPr = await getPR(this.number(), true); // to force GitHub refresh the PR's 'merge' commit
             assert(tagPr.number === this.number());
@@ -299,19 +299,19 @@ class MergeContext {
 
             let ret = 'skip';
             if (tagCommit.treeSha !== prCommit.treeSha) {
-                this._log("will re-try: merge commit has changed since last failed auto checks");
+                this._log("will re-try: merge commit has changed since last failed staging checks");
                 if (!Config.dryRun())
                     await deleteReference(this.mergingTag());
                 ret = 'start';
             } else {
-                let msg = "will not re-try: merge commit has not changed since last failed auto checks";
+                let msg = "will not re-try: merge commit has not changed since last failed staging checks";
                 // the base branch could be changed but resulting with new conflicts,
                 // merge commit is not updated then
                 if (tagPr.mergeable !== true)
                     msg += " due to conflicts with " + tagPr.base.ref;
                 this._log(msg);
                 if (!Config.dryRun())
-                    await this._labelAutoFailed();
+                    await this._labelStagingFailed();
                 ret = 'skip';
             }
             return ret;
@@ -362,7 +362,7 @@ class MergeContext {
         return true;
     }
 
-    // Creates a 'merge commit' and adjusts auto_branch.
+    // Creates a 'merge commit' and adjusts staging_branch.
     async _startMerging() {
         this._log("start merging...");
         const baseSha = await getReference(this.prBaseBranchPath());
@@ -370,10 +370,10 @@ class MergeContext {
         const mergeCommit = await getCommit(mergeSha);
         const tempCommitSha = await createCommit(mergeCommit.treeSha, this.prMessage(), [baseSha]);
         this._tagSha = await createReference(tempCommitSha, "refs/" + this.mergingTag());
-        await updateReference(Config.autoBranch(), this._tagSha, true);
+        await updateReference(Config.stagingBranch(), this._tagSha, true);
     }
 
-    // fast-forwards base into auto_branch
+    // fast-forwards base into staging_branch
     async _finishMerging() {
         assert(this._tagSha);
         this._log("finish merging...");
@@ -566,7 +566,7 @@ class MergeContext {
     async _labelMerging() {
         await this.removeLabel(MergeReadyLabel);
         await this.removeLabel(MergeFailedLabel);
-        await this.removeLabel(AutoChecksFailedLabel);
+        await this.removeLabel(StagingChecksFailedLabel);
         await this.addLabel(MergingLabel);
     }
 
@@ -574,7 +574,7 @@ class MergeContext {
         await this.removeLabel(MergingLabel);
         await this.removeLabel(MergeReadyLabel);
         await this.removeLabel(MergeFailedLabel);
-        await this.removeLabel(AutoChecksFailedLabel);
+        await this.removeLabel(StagingChecksFailedLabel);
         await this.addLabel(MergedLabel);
     }
 
@@ -584,14 +584,14 @@ class MergeContext {
         await this.addLabel(MergeFailedLabel);
     }
 
-    async _labelAutoFailed() {
+    async _labelStagingFailed() {
         await this.removeLabel(MergingLabel);
-        await this.addLabel(AutoChecksFailedLabel);
+        await this.addLabel(StagingChecksFailedLabel);
     }
 
     async _labelMergeReady() {
         await this.removeLabel(MergingLabel);
-        await this.removeLabel(AutoChecksFailedLabel);
+        await this.removeLabel(StagingChecksFailedLabel);
         await this.addLabel(MergeReadyLabel);
     }
 
@@ -695,11 +695,11 @@ class MergeStep {
         return context;
     }
 
-    // Loads 'being-in-merge' PR, if exists (the PR has tag and auto_branch points to the tag).
+    // Loads 'being-in-merge' PR, if exists (the PR has tag and staging_branch points to the tag).
     async _current() {
         if (!this.prList.length)
             return null;
-        const autoSha = await getReference(Config.autoBranch());
+        const stagingSha = await getReference(Config.stagingBranch());
         let tags = null;
         // request all repository tags
         try {
@@ -712,11 +712,11 @@ class MergeStep {
             throw e;
         }
 
-        // search for a tag, the auto_branch points to,
+        // search for a tag, the staging_branch points to,
         // and parse out PR number from the tag name
         let prNum = null;
         for (let tag of tags) {
-            if (tag.object.sha === autoSha) {
+            if (tag.object.sha === stagingSha) {
                 const matched = tag.ref.match(TagRegex);
                 if (matched) {
                     prNum = matched[2];
@@ -730,9 +730,9 @@ class MergeStep {
             return null;
         }
 
-        let autoPr = null;
+        let stagingPr = null;
         try {
-            autoPr = await getPR(prNum, false);
+            stagingPr = await getPR(prNum, false);
         } catch (e) {
             // It should be unlikely that the PR disappears due to a bot's fault,
             // though a GitHub user can close the PR manually at any time.
@@ -745,7 +745,7 @@ class MergeStep {
             }
             throw e;
         }
-        let context = new MergeContext(autoPr, autoSha);
+        let context = new MergeContext(stagingPr, stagingSha);
         const prevLen = this.prList.length;
         // remove the loaded PR from the global list
         this.prList = this.prList.filter(pr => pr.number !== context.number());

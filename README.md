@@ -103,7 +103,7 @@ request state:
 
 * S-merging: The PR is being processed by the bot. The bot eventually
   replaces this label with one of the other labels below.
-* S-autochecks-failed: Essentially duplicates GitHub "red x" mark for
+* S-staging-checks-failed: Essentially duplicates GitHub "red x" mark for
   the staging branch commit. The bot removes this label when it notices
   that the failed checks are no longer fresh/applicable.
 * S-merge-ready: Duplicates GitHub "green check" mark for the staging
@@ -112,7 +112,7 @@ request state:
   on information? All S-merged and S-merge-failed PRs are S-merge-ready
   for a brief moment...)
 * S-merge-failed: Unrecoverable failure other than the staging branch
-  test failure (the latter is marked with `S-autochecks-failed`). The
+  test failure (the latter is marked with `S-staging-checks-failed`). The
   bot ignores this PR until the PR branch or its target branch change.
   When the bot notices that change, it removes this label.
 * S-merged: The PR was successfully merged (and probably closed). The
@@ -212,7 +212,7 @@ All configuration fields are required (XXX: Why is there a "default" column in t
 *owner* | The owner (a person or organization) of the GitHub repository. | -
 *dry_run*| A boolean option to enable read-only, no-modifications mode where the bot logs pull requests selected for merging but skips further merging steps.| false
 *skip_merge*| A boolean option to enable no-final-modifications mode where the bot performs all the merging steps up to (and not including) the target branch update. Eligible PRs are merged into and tested on the staging branch but are never merged into their target branches. | false
-*auto_branch* | The name of the staging branch. | heads/auto_branch
+*staging_branch* | The name of the staging branch. | auto
 *necessary_approvals* | The minimal number of "core" developers required for a PR to become eligible for merging. PRs with fewer votes are not merged, regardless of their age. | 2
 *voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. PR age is measured in days from the PR creation time. | 2
 *sufficient_approvals* | The minimal number of core developers required for a PR to be merged fast (i.e., without waiting for `config::voting_delay_max`) | 2
