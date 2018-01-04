@@ -11,5 +11,9 @@
     "auto_branch": "heads/auto_branch",
     "approvals_number": 2,
     "approval_period": 10,
-    "reject_period": 2
+    "reject_period": 2,
+    "logger_type": "rotating-file",
+    "logger_path": "./eggtimer.log",
+    "logger_period": "1d",
+    "logger_count": 3
 }

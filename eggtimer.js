@@ -40,6 +40,10 @@ class ConfigOptions {
         assert(this._approvalsNumber > 1);
         this._approvalPeriod = conf.approval_period; // in days
         this._rejectPeriod = conf.reject_period; // in days
+        this._loggerType = conf.logger_type;
+        this._loggerPath = conf.logger_path;
+        this._loggerPeriod = conf.logger_period;
+        this._loggerCount = conf.logger_count;
 
         const allOptions = Object.values(this);
         for (let v of allOptions) {
@@ -60,13 +64,28 @@ class ConfigOptions {
     approvalsNumber() { return this._approvalsNumber; }
     approvalPeriod() { return this._approvalPeriod; }
     rejectPeriod() { return this._rejectPeriod; }
+    loggerType() { return this._loggerType; }
+    loggerPath() { return this._loggerPath; }
+    loggerPeriod() { return this._loggerPeriod; }
+    loggerCount() { return this._loggerCount; }
 }
 
 const Config = new ConfigOptions('config.js');
+
+const Logger = bunyan.createLogger({
+    name: 'eggtimer',
+    streams: [{
+        type: Config.loggerType(),
+        path: Config.loggerPath(),
+        period: Config.loggerPeriod(),
+        count: Config.loggerCount()
+      }]
+    });
+Logger.addStream({name: "eggtimer-out", stream: process.stdout});
+
 const WebhookHandler = createHandler({ path: Config.githubWebhookPath(), secret: Config.githubWebhookSecret() });
 const GitHub = new nodeGitHub({ version: "3.0.0" });
 const GitHubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
-let Logger;
 
 function logError(err, context) {
     assert(context);
@@ -90,18 +109,6 @@ class RunScheduler {
     }
 
     async startup() {
-
-        Logger = bunyan.createLogger({
-        name: 'eggtimer',
-        streams: [{
-            type: 'rotating-file',
-            path: './eggtimer.log',
-            period: '1d', // daily rotation
-            count: 3 // keep 3 back copies
-          }]
-        });
-        Logger.addStream({name: "eggtimer-out", stream: process.stdout});
-
         http.createServer((req, res) => {
             WebhookHandler(req, res, () => {
                 res.statusCode = 404;
