@@ -1,7 +1,7 @@
 const fs = require('fs');
 const http = require('http');
 const createHandler = require('github-webhook-handler');
-const nodeGithub = require('github');
+const nodeGitHub = require('github');
 const assert = require('assert');
 const endOfLine = require('os').EOL;
 const bunyan = require('bunyan');
@@ -64,8 +64,8 @@ class ConfigOptions {
 
 const Config = new ConfigOptions('config.js');
 const WebhookHandler = createHandler({ path: Config.githubWebhookPath(), secret: Config.githubWebhookSecret() });
-const Github = new nodeGithub({ version: "3.0.0" });
-const GithubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
+const GitHub = new nodeGitHub({ version: "3.0.0" });
+const GitHubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
 let Logger;
 
 function logError(err, context) {
@@ -279,7 +279,7 @@ class MergeContext {
             assert(commitStatus === 'failure');
             this._log("auto checks failed");
             const tagCommit = await getCommit(this._tagSha);
-            const tagPr = await getPR(this.number(), true); // to force Github refresh the PR's 'merge' commit
+            const tagPr = await getPR(this.number(), true); // to force GitHub refresh the PR's 'merge' commit
             assert(tagPr.number === this.number());
             const prMergeSha = await getReference(this.mergePath());
             const prCommit = await getCommit(prMergeSha);
@@ -394,10 +394,10 @@ class MergeContext {
         try {
             await deleteReference(this.mergingTag());
         } catch (e) {
-            // For the record: Github returns 422 error if there is no such
+            // For the record: GitHub returns 422 error if there is no such
             // reference 'refs/:sha', and 404 if there is no such tag 'tags/:tag'.
             // TODO: once I saw that both errors can be returned, so looks
-            // like this Github behavior is unstable.
+            // like this GitHub behavior is unstable.
             if (e.notFound())
                 this._log(this.mergingTag() + "tag not found");
             else
@@ -633,7 +633,7 @@ class MergeContext {
 } // MergeContext
 
 
-// Gets PR list from Github and processes some/all PRs from this list.
+// Gets PR list from GitHub and processes some/all PRs from this list.
 class MergeStep {
 
     constructor() {
@@ -642,7 +642,7 @@ class MergeStep {
         this.errors = 0;
     }
 
-    // Gets PR list from Github and processes them one by one.
+    // Gets PR list from GitHub and processes them one by one.
     // Returns if either all PRs have been processed(merged or skipped), or
     // there is a PR still-in-merge.
     async run() {
@@ -722,7 +722,7 @@ class MergeStep {
             autoPr = await getPR(prNum, false);
         } catch (e) {
             // It should be unlikely that the PR disappears due to a bot's fault,
-            // though a Github user can close the PR manually at any time.
+            // though a GitHub user can close the PR manually at any time.
             if (e.notFound()) {
                 const tag = MergingTag(prNum);
                 Logger.error("PR" + prNum + " not found for " + tag);
@@ -789,7 +789,7 @@ Scheduler.startup();
 class ErrorContext {
     constructor(err, method, args) {
         // The underlying rejection may be a bot-specific Promise.reject() or
-        // be caused by a Github API error, so 'err' contains either
+        // be caused by a GitHub API error, so 'err' contains either
         // an error string or the entire API error object.
         this._err = err;
         this._method = (method === undefined) ? null : method;
@@ -847,8 +847,8 @@ function commonParams() {
 function getPRList() {
     const params = commonParams();
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.pullRequests.getAll(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.pullRequests.getAll(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, getPRList.name, params));
                 return;
@@ -864,8 +864,8 @@ function getLabels(prNum) {
     let params = commonParams();
     params.number = prNum;
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.issues.getIssueLabels(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.issues.getIssueLabels(params, (err, res) => {
            if (err) {
                reject(new ErrorContext(err, getLabels.name, params));
                return;
@@ -883,10 +883,10 @@ async function getPR(prNum, awaitMergeable) {
         const pr = await requestPR(prNum);
         if (!awaitMergeable || pr.mergeable !== null)
             return pr;
-        Logger.info("PR" + prNum + ": Github still caluclates mergeable status. Will retry in " + (d/1000) + " seconds");
+        Logger.info("PR" + prNum + ": GitHub still caluclates mergeable status. Will retry in " + (d/1000) + " seconds");
         await sleep(d);
     }
-    return Promise.reject(new ErrorContext("Github could not calculate mergeable status",
+    return Promise.reject(new ErrorContext("GitHub could not calculate mergeable status",
                 getPR.name, {pr: prNum}));
 }
 
@@ -894,8 +894,8 @@ function requestPR(prNum) {
     let params = commonParams();
     params.number = prNum;
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.pullRequests.get(params, (err, pr) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.pullRequests.get(params, (err, pr) => {
             if (err) {
                 reject(new ErrorContext(err, requestPR.name, params));
                 return;
@@ -915,8 +915,8 @@ function getReviews(prNum) {
     let params = commonParams();
     params.number = prNum;
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.pullRequests.getReviews(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.pullRequests.getReviews(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, getReviews.name, params));
                 return;
@@ -930,8 +930,8 @@ function getStatuses(ref) {
     let params = commonParams();
     params.ref = ref;
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.repos.getCombinedStatusForRef(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.repos.getCombinedStatusForRef(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, getStatuses.name, params));
                 return;
@@ -946,8 +946,8 @@ function getCommit(sha) {
     let params = commonParams();
     params.sha = sha;
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.gitdata.getCommit(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.gitdata.getCommit(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, getCommit.name, params));
                 return;
@@ -966,8 +966,8 @@ function createCommit(treeSha, message, parents) {
     params.message = message;
     params.parents = parents;
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.gitdata.createCommit(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.gitdata.createCommit(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, createCommit.name, params));
                 return;
@@ -983,8 +983,8 @@ function getReference(ref) {
     let params = commonParams();
     params.ref = ref;
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.gitdata.getReference(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.gitdata.getReference(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, getReference.name, params));
                 return;
@@ -1000,8 +1000,8 @@ function getReference(ref) {
 function getTags() {
     let params = commonParams();
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.gitdata.getTags(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.gitdata.getTags(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, getTags.name, params));
                 return;
@@ -1018,8 +1018,8 @@ function createReference(sha, ref) {
     params.sha = sha;
     params.ref = ref;
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.gitdata.createReference(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.gitdata.createReference(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, createReference.name, params));
                 return;
@@ -1038,8 +1038,8 @@ function updateReference(ref, sha, force) {
     params.sha = sha;
     params.force = force; // default (ensure we do ff merge).
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.gitdata.updateReference(params, (err, res) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.gitdata.updateReference(params, (err, res) => {
             if (err) {
                 reject(new ErrorContext(err, updateReference.name, params));
                 return;
@@ -1056,8 +1056,8 @@ function deleteReference(ref) {
     let params = commonParams();
     params.ref = ref;
     return new Promise( (resolve, reject) => {
-        Github.authenticate(GithubAuthentication);
-        Github.gitdata.deleteReference(params, (err) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.gitdata.deleteReference(params, (err) => {
             if (err) {
                 reject(new ErrorContext(err, deleteReference.name, params));
                 return;
@@ -1075,8 +1075,8 @@ function updatePR(prNum, state) {
    params.state = state;
    params.number = prNum;
    return new Promise( (resolve, reject) => {
-     Github.authenticate(GithubAuthentication);
-     Github.pullRequests.update(params, (err, res) => {
+     GitHub.authenticate(GitHubAuthentication);
+     GitHub.pullRequests.update(params, (err, res) => {
         if (err) {
             reject(new ErrorContext(err, updatePR.name, params));
             return;
@@ -1091,8 +1091,8 @@ function updatePR(prNum, state) {
 function addLabels(params) {
    assert(!Config.dryRun());
    return new Promise( (resolve, reject) => {
-     Github.authenticate(GithubAuthentication);
-     Github.issues.addLabels(params, (err, res) => {
+     GitHub.authenticate(GitHubAuthentication);
+     GitHub.issues.addLabels(params, (err, res) => {
         if (err) {
             reject(new ErrorContext(err, addLabels.name, params));
             return;
@@ -1110,8 +1110,8 @@ function removeLabel(label, prNum) {
     params.number = prNum;
     params.name = label;
     return new Promise( (resolve, reject) => {
-      Github.authenticate(GithubAuthentication);
-      Github.issues.removeLabel(params, (err) => {
+      GitHub.authenticate(GitHubAuthentication);
+      GitHub.issues.removeLabel(params, (err) => {
           if (err) {
              reject(new ErrorContext(err, addLabels.name, params));
              return;
@@ -1127,8 +1127,8 @@ function getProtectedBranchRequiredStatusChecks(branch) {
     let params = commonParams();
     params.branch = branch;
     return new Promise( (resolve, reject) => {
-      Github.authenticate(GithubAuthentication);
-      Github.repos.getProtectedBranchRequiredStatusChecks(params, (err, res) => {
+      GitHub.authenticate(GitHubAuthentication);
+      GitHub.repos.getProtectedBranchRequiredStatusChecks(params, (err, res) => {
           if (err) {
              reject(new ErrorContext(err, getProtectedBranchRequiredStatusChecks.name, params));
              return;
@@ -1143,8 +1143,8 @@ function getProtectedBranchRequiredStatusChecks(branch) {
 function getCollaborators() {
     const params = commonParams();
     return new Promise( (resolve, reject) => {
-      Github.authenticate(GithubAuthentication);
-      Github.repos.getCollaborators(params, (err, res) => {
+      GitHub.authenticate(GitHubAuthentication);
+      GitHub.repos.getCollaborators(params, (err, res) => {
           if (err) {
              reject(new ErrorContext(err, getCollaborators.name, params));
              return;
