@@ -21,7 +21,7 @@ const MergingTagName = "T-merging-PR";
 function MergingTag(prNum) { return "tags/" + MergingTagName + prNum; }
 
 const TagRegex = /(refs\/tags\/.*-PR)(\d+)$/;
-const MsPerDay = 86400 * 1000;
+const MsPerHour = 3600 * 1000;
 
 class ConfigOptions {
     constructor(fname) {
@@ -39,8 +39,8 @@ class ConfigOptions {
         this._skipMerge = conf.skip_merge;
         this._approvalsNumber = conf.approvals_number;
         assert(this._approvalsNumber > 1);
-        this._approvalPeriod = conf.approval_period; // in days
-        this._rejectPeriod = conf.reject_period; // in days
+        this._approvalPeriod = conf.approval_period; // in hours
+        this._rejectPeriod = conf.reject_period; // in hours
         this._loggerType = conf.logger_type;
         this._loggerPath = conf.logger_path;
         this._loggerPeriod = conf.logger_period;
@@ -434,7 +434,7 @@ class MergeContext {
         let reviews = await getReviews(this.number());
 
         const prAgeMs = new Date() - new Date(this.createdAt());
-        const rejectPeriodMs = Config.rejectPeriod() * MsPerDay;
+        const rejectPeriodMs = Config.rejectPeriod() * MsPerHour;
         if (prAgeMs < rejectPeriodMs) {
             this._log("in reject period");
             return rejectPeriodMs - prAgeMs;
@@ -483,7 +483,7 @@ class MergeContext {
             return 0;
         } else {
             assert(usersApproved.length < Config.approvalsNumber());
-            const approvalPeriodMs = Config.approvalPeriod() * MsPerDay;
+            const approvalPeriodMs = Config.approvalPeriod() * MsPerHour;
             if (prAgeMs < approvalPeriodMs) {
                 this._log(defaultMsg + ", in approval period");
                 return approvalPeriodMs - prAgeMs;
