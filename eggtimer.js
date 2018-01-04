@@ -31,6 +31,7 @@ class ConfigOptions {
         this._githubWebhookPath = conf.github_webhook_path;
         this._githubWebhookSecret = conf.github_webhook_secret;
         this._repo = conf.repo;
+        this._host = conf.host;
         this._port = conf.port;
         this._owner = conf.owner;
         this._autoBranch = conf.auto_branch;
@@ -56,6 +57,7 @@ class ConfigOptions {
     githubWebhookPath() { return this._githubWebhookPath; }
     githubWebhookSecret() { return this._githubWebhookSecret; }
     repo() { return this._repo; }
+    host() { return this._host; }
     port() { return this._port; }
     owner() { return this._owner; }
     autoBranch() { return this._autoBranch; }
@@ -109,13 +111,17 @@ class RunScheduler {
     }
 
     async startup() {
-        http.createServer((req, res) => {
+        Logger.info("startup");
+        const server = http.createServer((req, res) => {
             WebhookHandler(req, res, () => {
                 res.statusCode = 404;
                 res.end('no such location');
             });
-        }).listen(Config.port());
-        Logger.info("startup");
+        });
+        if (Config.host())
+            server.listen({port: Config.port(), host: Config.host()});
+        else
+            server.listen({port: Config.port()});
         this.run();
     }
 
