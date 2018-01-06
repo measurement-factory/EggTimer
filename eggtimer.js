@@ -212,6 +212,7 @@ class MergeStep {
             return; // still in-process
 
         const prList = await getPRList();
+        prList.sort((pr1, pr2) => { return new Date(pr1.created_at) - new Date(pr2.created_at); });
 
         while (prList.length) {
             try {
