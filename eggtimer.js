@@ -196,7 +196,119 @@ class RunScheduler {
     }
 }
 
+// Gets PR list from GitHub and processes some/all PRs from this list.
+class MergeStep {
+
+    constructor() {
+        this.total = 0;
+        this.errors = 0;
+    }
+
+    // Gets PR list from GitHub and processes them one by one.
+    // Returns if either all PRs have been processed(merged or skipped), or
+    // there is a PR still-in-merge.
+    async run() {
+        if (await this.resumeCurrent())
+            return; // still in-process
+
+        const prList = await getPRList();
+
+        while (prList.length) {
+            try {
+                let context = new MergeContext(prList.shift());
+                this.total++;
+                const running = await context.run();
+                if (running)
+                    break;
+            } catch (e) {
+                this.errors++;
+                if (!prList.length)
+                    throw e;
+            }
+        }
+    }
+
+    // Looks for the being-in-merge PR and resumes its merging, if found.
+    // If such PR was found and its merging not yet finished, returns 'true'.
+    // If no such PR was found or its merging was finished, returns 'false'.
+    async resumeCurrent() {
+        Logger.info("runCurrent");
+        let context = await this._current();
+        if (!context)
+            return false;
+
+        const commitStatus = await context.checkStatuses(context.tagSha);
+
+        if (commitStatus === 'pending') {
+            this._log("waiting for more staging checks completing");
+            return true;
+        } else if (commitStatus === 'success') {
+            this._log("staging checks succeeded");
+            // TODO: log whether that staging_branch points to us.
+            // return 'continue';
+            return await context.run();
+        } else {
+            assert(commitStatus === 'failure');
+            return false;
+        }
+    }
+
+    // Loads 'being-in-merge' PR, if exists (the PR has tag and staging_branch points to the tag).
+    async _current() {
+        const stagingSha = await getReference(Config.stagingBranch());
+        let tags = null;
+        // request all repository tags
+        tags = await getTags();
+        if (!tags.length) {
+            Logger.info("No tags found");
+            return null;
+        }
+
+        // search for a tag, the staging_branch points to,
+        // and parse out PR number from the tag name
+        let prNum = null;
+        for (let tag of tags) {
+            if (tag.object.sha === stagingSha) {
+                const matched = tag.ref.match(TagRegex);
+                if (matched) {
+                    prNum = matched[2];
+                    break;
+                }
+            }
+        }
+
+        if (prNum === null) {
+            Logger.info("No merging PR found.");
+            return null;
+        }
+
+        let stagingPr = null;
+        try {
+            stagingPr = await getPR(prNum, false);
+        } catch (e) {
+            // It should be unlikely that the PR disappears due to a bot's fault,
+            // though a GitHub user can close the PR manually at any time.
+            if (e.notFound()) {
+                const tag = MergingTag(prNum);
+                Logger.error("PR" + prNum + " not found for " + tag);
+                if (!Config.dryRun())
+                    await deleteReference(tag);
+                return null;
+            }
+            throw e;
+        }
+
+        return new MergeContext(stagingPr, stagingSha);
+    }
+
+    logStatistics() {
+        Logger.info("Merge step finished. Total PRs processed: " + this.total + ", skipped due to errors: " + this.errors);
+    }
+
+} // MergeStep
+
 const Scheduler = new RunScheduler();
+Scheduler.startup();
 
 // Processing a single PR
 class MergeContext {
@@ -205,7 +317,7 @@ class MergeContext {
         // true when fast-forwarding master into staging_branch fails
         this.ffMergeFailed = false;
         this._pr = pr;
-        this._tagSha = (tSha === undefined) ? null : tSha;
+        this.tagSha = (tSha === undefined) ? null : tSha;
         this._shaLimit = 6;
     }
 
@@ -213,56 +325,71 @@ class MergeContext {
     // Returns 'true' if the PR is still in-process and
     // 'false' when the PR was successfully merged or skipped
     // due to an error (e.g., failed staging checks).
-    async process() {
-        let checkTagResult = null;
-        if (this._tagSha)
-            checkTagResult = await this._checkTag();
-
-        if (!checkTagResult || checkTagResult === 'start') {
-            if (!(await this._checkMergePreconditions()))
-                return false;
-
-            if (Config.dryRun()) {
-                this._warnDryRun("start merging");
-                return false;
+    async run() {
+        try {
+            if (await this._process()) {
+                this._log("Still processing");
+                return true;
             }
-            await this._startMerging();
-            await this._labelMerging();
+        } catch (e) {
+            this.logError(e, "MergeContext.run");
+            // should re-run fast-forwarding failed due to a base change
+            if (this.ffMergeFailed)
+                Scheduler.rerun = true;
+            await this.cleanupUnexpectedError();
+            throw e;
+        }
+        return false;
+    }
+
+    async _process() {
+        let stillInProcess;
+        if (this.tagSha)
+            stillInProcess = !(await this._finishProcessing());
+        else
+            stillInProcess = await this._startProcessing();
+        return stillInProcess;
+    }
+
+    // Returns 'true' if the PR passed all checks and merging started,
+    // 'false' when the PR was skipped due to some failed checks.
+    async _startProcessing() {
+        if (!(await this._checkMergePreconditions()))
+            return false;
+
+        if (Config.dryRun()) {
+            this._warnDryRun("start merging");
+            return false;
+        }
+        await this._startMerging();
+        await this._labelMerging();
+        return true;
+    }
+
+    // Returns 'true' when the PR was successfully merged;
+    // 'false' if the PR is still in-process(delayed for some reason);
+    async _finishProcessing() {
+        if (Config.dryRun()) {
+            this._warnDryRun("finish merging");
             return true;
         }
 
-        assert(checkTagResult);
+        await this._labelMergeReady();
 
-        if (checkTagResult === 'continue') {
-            if (Config.dryRun()) {
-                this._warnDryRun("finish merging");
-                return true;
-            }
-
-            await this._labelMergeReady();
-
-            if (Config.skipMerge()) {
-                this._warnDryRun("finish merging", "skip_merge");
-                return true;
-            }
-
-            await this._finishMerging();
-            await this._cleanupMerged();
-            return false;
-        } else if (checkTagResult === 'wait') {
-            // still waiting for staging checks
+        if (Config.skipMerge()) {
+            this._warnDryRun("finish merging", "skip_merge");
             return true;
-        } else {
-            // skip this PR
-            assert(checkTagResult === 'skip');
-            return false;
         }
+
+        await this._finishMerging();
+        await this._cleanupMerged();
+        return false;
     }
 
     // Tries to load 'merge tag' for the PR.
-    async loadTag() {
+    async _loadTag() {
        try {
-           this._tagSha = await getReference(this.mergingTag());
+           this.tagSha = await getReference(this.mergingTag());
        } catch (e) {
            if (e.notFound())
                this._log(this.mergingTag() + " not found");
@@ -272,51 +399,37 @@ class MergeContext {
     }
 
     // Examines 'merge tag' for the PR.
-    // Returns one of:
-    // 'start': the tag is stale; should start merging from scratch.
-    // 'wait': the tag tests are in progress; should wait for their completion.
-    // 'continue': the tag tests completed with success; should finish merging.
-    // 'skip': the tag tests failed but the tag is not stale; do not process this PR.
+    // Returns 'true' if the tag does not exist or the caller should ignore this tag;
+    // 'false': the non-stale tag exists and it is status is 'failure'.
     async _checkTag() {
-        assert(this._tagSha);
+        await this._loadTag();
+        if (!this.tagSha)
+            return true;
 
-        const commitStatus = await this._checkStatuses(this._tagSha);
+        const commitStatus = await this.checkStatuses(this.tagSha);
+        if (commitStatus !== 'failure')
+            return true;
 
-        if (commitStatus === 'pending') {
-            this._log("waiting for more staging checks completing");
-            // TODO: log whether that staging_branch points to us.
-            return 'wait';
-        } else if ( commitStatus === 'success') {
-            this._log("staging checks succeeded");
-            // TODO: log whether that staging_branch points to us.
-            return 'continue';
+        this._log("staging checks failed");
+        const tagCommit = await getCommit(this.tagSha);
+        const prMergeSha = await getReference(this.mergePath());
+        const prCommit = await getCommit(prMergeSha);
+
+        if (tagCommit.treeSha !== prCommit.treeSha) {
+            this._log("will re-try: merge commit has changed since last failed staging checks");
+            if (!Config.dryRun())
+                await deleteReference(this.mergingTag());
+            return true;
         } else {
-            assert(commitStatus === 'failure');
-            this._log("staging checks failed");
-            const tagCommit = await getCommit(this._tagSha);
-            const tagPr = await getPR(this.number(), true); // to force GitHub refresh the PR's 'merge' commit
-            assert(tagPr.number === this.number());
-            const prMergeSha = await getReference(this.mergePath());
-            const prCommit = await getCommit(prMergeSha);
-
-            let ret = 'skip';
-            if (tagCommit.treeSha !== prCommit.treeSha) {
-                this._log("will re-try: merge commit has changed since last failed staging checks");
-                if (!Config.dryRun())
-                    await deleteReference(this.mergingTag());
-                ret = 'start';
-            } else {
-                let msg = "will not re-try: merge commit has not changed since last failed staging checks";
-                // the base branch could be changed but resulting with new conflicts,
-                // merge commit is not updated then
-                if (tagPr.mergeable !== true)
-                    msg += " due to conflicts with " + tagPr.base.ref;
-                this._log(msg);
-                if (!Config.dryRun())
-                    await this._labelStagingFailed();
-                ret = 'skip';
-            }
-            return ret;
+            let msg = "will not re-try: merge commit has not changed since last failed staging checks";
+            // the base branch could be changed but resulting with new conflicts,
+            // merge commit is not updated then
+            if (this.prMergeable() !== true)
+                msg += " due to conflicts with " + this.prBaseBranch();
+            this._log(msg);
+            if (!Config.dryRun())
+                await this._labelStagingFailed();
+            return false;
         }
     }
 
@@ -345,7 +458,7 @@ class MergeContext {
             return false;
         }
 
-        const commitStatus = await this._checkStatuses(this.prHeadSha());
+        const commitStatus = await this.checkStatuses(this.prHeadSha());
         if (commitStatus !== 'success') {
             this._log("commit status is " + commitStatus);
             return false;
@@ -355,6 +468,9 @@ class MergeContext {
             this._log("already merged");
             return false;
         }
+
+        if (!(await this._checkTag()))
+            return false;
 
         if (Scheduler.rerun) {
             this._log("rerun");
@@ -371,16 +487,16 @@ class MergeContext {
         const mergeSha = await getReference("pull/" + this.number() + "/merge");
         const mergeCommit = await getCommit(mergeSha);
         const tempCommitSha = await createCommit(mergeCommit.treeSha, this.prMessage(), [baseSha]);
-        this._tagSha = await createReference(tempCommitSha, "refs/" + this.mergingTag());
-        await updateReference(Config.stagingBranch(), this._tagSha, true);
+        this.tagSha = await createReference(tempCommitSha, "refs/" + this.mergingTag());
+        await updateReference(Config.stagingBranch(), this.tagSha, true);
     }
 
     // fast-forwards base into staging_branch
     async _finishMerging() {
-        assert(this._tagSha);
+        assert(this.tagSha);
         this._log("finish merging...");
         try {
-            await updateReference(this.prBaseBranchPath(), this._tagSha, false);
+            await updateReference(this.prBaseBranchPath(), this.tagSha, false);
         } catch (e) {
             if (e.unprocessable()) {
                 this._log("fast-forwarding failed");
@@ -499,7 +615,7 @@ class MergeContext {
     // 'pending' if some of required checks are 'pending'
     // 'success' if all of required are 'success'
     // 'error' otherwise
-    async _checkStatuses(ref) {
+    async checkStatuses(ref) {
 
         const requiredContexts = await getProtectedBranchRequiredStatusChecks(this.prBaseBranch());
         // https://developer.github.com/v3/repos/statuses/#get-the-combined-status-for-a-specific-ref
@@ -641,125 +757,11 @@ class MergeContext {
 
     toString() {
         let str = "PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit);
-        if (this._tagSha !== null)
-            str += ", tag: " + this._tagSha.substr(0, this._shaLimit);
+        if (this.tagSha !== null)
+            str += ", tag: " + this.tagSha.substr(0, this._shaLimit);
         return str + ")";
     }
 } // MergeContext
-
-
-// Gets PR list from GitHub and processes some/all PRs from this list.
-class MergeStep {
-
-    constructor() {
-        this.prList = [];
-        this.total = 0;
-        this.errors = 0;
-    }
-
-    // Gets PR list from GitHub and processes them one by one.
-    // Returns if either all PRs have been processed(merged or skipped), or
-    // there is a PR still-in-merge.
-    async run() {
-        Logger.info("running merge step...");
-        this.prList = await getPRList();
-        let mergeContext = await this._current();
-        if (!mergeContext)
-            mergeContext = await this._next();
-        while (mergeContext) {
-            this.total++;
-            try {
-                if (await mergeContext.process()) {
-                    Logger.info("Still processing: " + mergeContext.toString());
-                    // still in-process, not ready to start the next one
-                    break;
-                }
-            } catch (e) {
-                this.errors++;
-                // should re-run fast-forwarding failed due to a base change
-                if (mergeContext.ffMergeFailed)
-                    Scheduler.rerun = true;
-                await mergeContext.cleanupUnexpectedError();
-                if (this.prList.length)
-                    mergeContext.logError(e, "MergeContext.process");
-                else
-                    throw e;
-            }
-            mergeContext = await this._next();
-        }
-    }
-
-    async _next() {
-        if (!this.prList.length)
-            return null;
-        let context = new MergeContext(this.prList.shift());
-        await context.loadTag();
-        return context;
-    }
-
-    // Loads 'being-in-merge' PR, if exists (the PR has tag and staging_branch points to the tag).
-    async _current() {
-        if (!this.prList.length)
-            return null;
-        const stagingSha = await getReference(Config.stagingBranch());
-        let tags = null;
-        // request all repository tags
-        try {
-            tags = await getTags();
-        } catch (e) {
-            if (e.notFound()) {
-                Logger.info("No tags found");
-                return null;
-            }
-            throw e;
-        }
-
-        // search for a tag, the staging_branch points to,
-        // and parse out PR number from the tag name
-        let prNum = null;
-        for (let tag of tags) {
-            if (tag.object.sha === stagingSha) {
-                const matched = tag.ref.match(TagRegex);
-                if (matched) {
-                    prNum = matched[2];
-                    break;
-                }
-            }
-        }
-
-        if (prNum === null) {
-            Logger.info("No merging PR found.");
-            return null;
-        }
-
-        let stagingPr = null;
-        try {
-            stagingPr = await getPR(prNum, false);
-        } catch (e) {
-            // It should be unlikely that the PR disappears due to a bot's fault,
-            // though a GitHub user can close the PR manually at any time.
-            if (e.notFound()) {
-                const tag = MergingTag(prNum);
-                Logger.error("PR" + prNum + " not found for " + tag);
-                if (!Config.dryRun())
-                    await deleteReference(tag);
-                return null;
-            }
-            throw e;
-        }
-        let context = new MergeContext(stagingPr, stagingSha);
-        const prevLen = this.prList.length;
-        // remove the loaded PR from the global list
-        this.prList = this.prList.filter(pr => pr.number !== context.number());
-        assert(prevLen - 1 === this.prList.length);
-        return context;
-    }
-
-    logStatistics() {
-        Logger.info("Merge step finished. Total PRs processed: " + this.total + ", skipped due to errors: " + this.errors);
-    }
-
-} // MergeStep
 
 // events
 
@@ -794,8 +796,6 @@ WebhookHandler.on('push', (ev) => {
     Logger.info("push event:", e.ref);
     Scheduler.run();
 });
-
-Scheduler.startup();
 
 
 // Promisificated node-github wrappers
@@ -1017,12 +1017,14 @@ function getTags() {
     return new Promise( (resolve, reject) => {
         GitHub.authenticate(GitHubAuthentication);
         GitHub.gitdata.getTags(params, (err, res) => {
-            if (err) {
+            const notFound = (err && err.code === 404);
+            if (err && !notFound) {
                 reject(new ErrorContext(err, getTags.name, params));
                 return;
             }
-            logApiResult(getTags.name, params, {tags: res.data.length});
-            resolve(res.data);
+            const result = notFound ? [] : res.data;
+            logApiResult(getTags.name, params, {tags: result.length});
+            resolve(result);
         });
     });
 }
