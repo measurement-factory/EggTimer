@@ -366,9 +366,8 @@ class MergeContext {
             return true;
         }
 
-        await this._labelMergeReady();
-
         if (Config.skipMerge()) {
+            await this._labelMergeReady();
             this._warnDryRun("finish merging", "skip_merge");
             return true;
         }
