@@ -22,7 +22,7 @@ function MergingTag(prNum) {
     return "tags/T-merging-PR" + prNum;
 }
 
-const TagRegex = /(refs\/tags\/.*-PR)(\d+)$/;
+const TagRegex = /(refs\/)(tags\/.*-PR)(\d+)$/;
 const MsPerHour = 3600 * 1000;
 
 class ConfigOptions {
@@ -259,11 +259,13 @@ class MergeStep {
         // search for a tag, the staging_branch points to,
         // and parse out PR number from the tag name
         let prNum = null;
+        let tagName = null;
         for (let tag of tags) {
             if (tag.object.sha === stagingSha) {
                 const matched = tag.ref.match(TagRegex);
                 if (matched) {
-                    prNum = matched[2];
+                    prNum = matched[3];
+                    tagName = matched[2] + matched[3];
                     break;
                 }
             }
@@ -273,20 +275,20 @@ class MergeStep {
             Logger.info("No merging PR found.");
             return null;
         }
+        assert(tagName === MergingTag(prNum));
 
         let stagingPr = null;
         try {
             stagingPr = await getPR(prNum, false);
-        } catch (e) {
-            // It should be unlikely that the PR disappears due to a bot's fault,
-            // though a GitHub user can close the PR manually at any time.
-            if (e.notFound()) {
-                const tag = MergingTag(prNum);
-                Logger.error("PR" + prNum + " not found for " + tag);
+            if (stagingPr.state !== 'open') {
+                Logger.error("PR" + prNum + " was unexpectedly closed");
                 if (!Config.dryRun())
-                    await deleteReference(tag);
+                    await deleteReference(tagName);
                 return null;
             }
+        } catch (e) {
+            if (!Config.dryRun())
+                await deleteReference(tagName);
             throw e;
         }
 
@@ -434,6 +436,11 @@ class MergeContext {
         // refresh PR data
         assert(pr.number === this._pr.number);
         this._pr = pr;
+
+        if (!this.prOpen()) {
+            this._log("unexpectedly closed");
+            return false;
+        }
 
         if (!this.prMergeable()) {
             this._log("not mergeable yet.");
@@ -904,10 +911,6 @@ function requestPR(prNum) {
         GitHub.pullRequests.get(params, (err, pr) => {
             if (err) {
                 reject(new ErrorContext(err, requestPR.name, params));
-                return;
-            }
-            if (pr.data.state !== 'open') {
-                reject(new ErrorContext("PR was unexpectedly closed", requestPR.name, {pr: prNum}));
                 return;
             }
             const result = {number: pr.data.number};
