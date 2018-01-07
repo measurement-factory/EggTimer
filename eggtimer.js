@@ -107,7 +107,8 @@ class RunScheduler {
         // Essentially a (key,value) list:
         // key: PR number
         // value: a timer id, returned by setTimeout()
-        this._prTimeouts = {};
+        this._timer = null;
+        this._fireDate = null;
         this.rerun = false;
         this.running = false;
     }
@@ -128,10 +129,7 @@ class RunScheduler {
     }
 
     // prNum (if provided) corresponds to a PR, scheduled this 'run'
-    async run(prNum) {
-        if (prNum !== undefined)
-            this._unplan(prNum);
-
+    async run() {
         if (this.running) {
             Logger.info("Already running, planning rerun.");
             this.rerun = true;
@@ -161,23 +159,17 @@ class RunScheduler {
 
     plan(ms, prNum) {
         assert(ms >= 0);
-        assert(prNum > 0);
-        this._unplan(prNum);
-        Logger.info("planning rerun for PR" + prNum + " in " + this._msToTime(ms));
-        this._prTimeouts[prNum] = setTimeout(this.run.bind(this), ms, prNum);
-    }
-
-    _planned(prNum) {
-        return Object.keys(this._prTimeouts).find(num => prNum === num) !== undefined;
-    }
-
-    _unplan(prNum) {
-        if (!this._planned(prNum))
+        let date = new Date();
+        if (this._fireDate < date) // do cleanup (the timer already fired)
+            this._fireDate = null;
+        date.setSeconds(date.getSeconds() + ms/1000);
+        if (this._fireDate && date >= this._fireDate)
             return;
-        Logger.info("unplanning rerun for PR" + prNum);
-        // does nothing if timed out already
-        clearTimeout(this._prTimeouts[prNum]);
-        delete this._prTimeouts[prNum];
+        if (!this._timer === null)
+            clearTimeout(this._timer);
+        this._fireDate = date;
+        this._timer = setTimeout(this.run.bind(this), ms);
+        Logger.info("planning rerun for PR" + prNum + " in " + this._msToTime(ms));
     }
 
     // duration in ms
@@ -233,7 +225,6 @@ class MergeStep {
     // If such PR was found and its merging not yet finished, returns 'true'.
     // If no such PR was found or its merging was finished, returns 'false'.
     async resumeCurrent() {
-        Logger.info("runCurrent");
         let context = await this._current();
         if (!context)
             return false;
