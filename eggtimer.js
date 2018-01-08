@@ -143,15 +143,16 @@ class RunScheduler {
             try {
                 this.rerun = false;
                 step = new MergeStep();
-                await step.run();
+                await step.runStep();
             } catch (e) {
                 logError(e, "RunScheduler.run");
-                if (step)
-                    step.logStatistics();
                 this.rerun = true;
                 const period = 10; // 10 min
                 Logger.info("next re-try in " + period + " minutes.");
                 await sleep(period * 60 * 1000); // 10 min
+            } finally {
+                if (step)
+                    step.logStatistics();
             }
         } while (this.rerun);
         this.running = false;
@@ -199,9 +200,13 @@ class MergeStep {
     // Gets PR list from GitHub and processes them one by one.
     // Returns if either all PRs have been processed(merged or skipped), or
     // there is a PR still-in-merge.
-    async run() {
-        if (await this.resumeCurrent())
-            return; // still in-process
+    async runStep() {
+        try {
+            if (await this.resumeCurrent())
+                return; // still in-process
+        } catch (e) {
+            this.errors++;
+        }
 
         const prList = await getPRList();
         prList.sort((pr1, pr2) => { return new Date(pr1.created_at) - new Date(pr2.created_at); });
@@ -210,7 +215,7 @@ class MergeStep {
             try {
                 let context = new MergeContext(prList.shift());
                 this.total++;
-                const running = await context.run();
+                const running = await context.runContext();
                 if (running)
                     break;
             } catch (e) {
@@ -229,16 +234,18 @@ class MergeStep {
         if (!context)
             return false;
 
+        this.total = 1;
+
         const commitStatus = await context.checkStatuses(context.tagSha);
 
         if (commitStatus === 'pending') {
-            this._log("waiting for more staging checks completing");
+            Logger.info("waiting for more staging checks completing");
             return true;
         } else if (commitStatus === 'success') {
-            this._log("staging checks succeeded");
+            Logger.info("staging checks succeeded");
             // TODO: log whether that staging_branch points to us.
             // return 'continue';
-            return await context.run();
+            return await context.runContext();
         } else {
             assert(commitStatus === 'failure');
             return false;
@@ -319,7 +326,7 @@ class MergeContext {
     // Returns 'true' if the PR is still in-process and
     // 'false' when the PR was successfully merged or skipped
     // due to an error (e.g., failed staging checks).
-    async run() {
+    async runContext() {
         try {
             if (await this._process()) {
                 this._log("Still processing");
@@ -348,7 +355,7 @@ class MergeContext {
     // Returns 'true' if the PR passed all checks and merging started,
     // 'false' when the PR was skipped due to some failed checks.
     async _startProcessing() {
-        if (!(await this._checkMergePreconditions()))
+        if (!(await this._checkMergeConditions("checking merge preconditions...")))
             return false;
 
         if (Config.dryRun()) {
@@ -360,23 +367,32 @@ class MergeContext {
         return true;
     }
 
-    // Returns 'true' when the PR was successfully merged;
-    // 'false' if the PR is still in-process(delayed for some reason);
+    // Returns 'true' if the PR processing was finished (it was merged or
+    // an error occurred so that we need to start it from scratch);
+    // 'false' if the PR is still in-process (delayed for some reason);
     async _finishProcessing() {
+        if (await this._tagIsFresh()) {
+            if (!(await this._checkMergeConditions("checking merge postconditions..."))) {
+                await deleteReference(this.mergingTag());
+                await this._labelMergeFailed();
+                return true;
+            }
+        }
+
         if (Config.dryRun()) {
             this._warnDryRun("finish merging");
-            return true;
+            return false;
         }
 
         if (Config.skipMerge()) {
             await this._labelMergeReady();
             this._warnDryRun("finish merging", "skip_merge");
-            return true;
+            return false;
         }
 
         await this._finishMerging();
         await this._cleanupMerged();
-        return false;
+        return true;
     }
 
     // Tries to load 'merge tag' for the PR.
@@ -391,10 +407,11 @@ class MergeContext {
        }
     }
 
-    // Examines 'merge tag' for the PR.
-    // Returns 'true' if the tag does not exist or the caller should ignore this tag;
-    // 'false': the non-stale tag exists and it is status is 'failure'.
-    async _checkTag() {
+    // Check 'merge tag' state as merge condition.
+    // Returns 'true' if the tag does not exist or the caller (i.e., preconditions
+    // verifier) should ignore this tag;
+    // 'false': the non-stale tag exists and it's status is 'failure'.
+    async _ignoreTag() {
         await this._loadTag();
         if (!this.tagSha)
             return true;
@@ -403,17 +420,8 @@ class MergeContext {
         if (commitStatus !== 'failure')
             return true;
 
-        this._log("staging checks failed");
-        const tagCommit = await getCommit(this.tagSha);
-        const prMergeSha = await getReference(this.mergePath());
-        const prCommit = await getCommit(prMergeSha);
-
-        if (tagCommit.treeSha !== prCommit.treeSha) {
-            this._log("will re-try: merge commit has changed since last failed staging checks");
-            if (!Config.dryRun())
-                await deleteReference(this.mergingTag());
-            return true;
-        } else {
+        this._log("staging checks failed some time ago");
+        if (await this._tagIsFresh()) {
             let msg = "will not re-try: merge commit has not changed since last failed staging checks";
             // the base branch could be changed but resulting with new conflicts,
             // merge commit is not updated then
@@ -423,14 +431,27 @@ class MergeContext {
             if (!Config.dryRun())
                 await this._labelStagingFailed();
             return false;
+        } else {
+            this._log("will re-try: merge commit has changed since last failed staging checks");
+            if (!Config.dryRun())
+                await deleteReference(this.mergingTag());
+            return true;
         }
+    }
+
+    // whether the tag and GitHub-generated PR 'merge commit' are equal
+    async _tagIsFresh() {
+        const tagCommit = await getCommit(this.tagSha);
+        const prMergeSha = await getReference(this.mergePath());
+        const prCommit = await getCommit(prMergeSha);
+        return tagCommit.treeSha === prCommit.treeSha;
     }
 
     // Checks whether the PR is ready for merge (all PR lamps are 'green').
     // Also forbids merging the already merged PR (marked with label) or
     // if was interrupted by an event ('Scheduler.rerun' is true).
-    async _checkMergePreconditions() {
-        this._log("checking merge preconditions...");
+    async _checkMergeConditions(desc) {
+        this._log(desc);
 
         const pr = await getPR(this.number(), true);
         // refresh PR data
@@ -467,7 +488,7 @@ class MergeContext {
             return false;
         }
 
-        if (!(await this._checkTag()))
+        if (!(await this._ignoreTag()))
             return false;
 
         if (Scheduler.rerun) {
