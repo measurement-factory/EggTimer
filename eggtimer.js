@@ -76,20 +76,37 @@ class ConfigOptions {
 
 const Config = new ConfigOptions('config.json');
 
-const Logger = bunyan.createLogger({
-    name: 'eggtimer',
-    streams: [{
-        type: Config.loggerType(),
-        path: Config.loggerPath(),
-        period: Config.loggerPeriod(),
-        count: Config.loggerCount()
-      }]
-    });
-Logger.addStream({name: "eggtimer-out", stream: process.stdout});
+let Logger = null;
+function CreateLogger() {
+    Logger = bunyan.createLogger({
+        name: 'eggtimer',
+        streams: [{
+            type: Config.loggerType(),
+            path: Config.loggerPath(),
+            period: Config.loggerPeriod(),
+            count: Config.loggerCount()
+          }]
+        });
+    Logger.addStream({name: "eggtimer-out", stream: process.stdout});
+}
 
 const WebhookHandler = createHandler({ path: Config.githubWebhookPath(), secret: Config.githubWebhookSecret() });
 const GitHub = new nodeGitHub({ version: "3.0.0" });
 const GitHubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
+
+function CreateServer() {
+    const server = http.createServer((req, res) => {
+        WebhookHandler(req, res, () => {
+            res.statusCode = 404;
+            res.end('no such location');
+        });
+    });
+
+    if (Config.host())
+        server.listen({port: Config.port(), host: Config.host()});
+    else
+        server.listen({port: Config.port()});
+}
 
 function logError(err, context) {
     assert(context);
@@ -115,16 +132,6 @@ class RunScheduler {
 
     async startup() {
         Logger.info("startup");
-        const server = http.createServer((req, res) => {
-            WebhookHandler(req, res, () => {
-                res.statusCode = 404;
-                res.end('no such location');
-            });
-        });
-        if (Config.host())
-            server.listen({port: Config.port(), host: Config.host()});
-        else
-            server.listen({port: Config.port()});
         this.run();
     }
 
@@ -308,6 +315,8 @@ class MergeStep {
 
 } // MergeStep
 
+CreateLogger();
+CreateServer();
 const Scheduler = new RunScheduler();
 Scheduler.startup();
 
