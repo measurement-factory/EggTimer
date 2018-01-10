@@ -3,6 +3,7 @@ const Config = require('./Config.js');
 const Log = require('./Logger.js');
 const Logger = Log.Logger;
 const GH = require('./GitHubUtil.js');
+const Merger = require('./Main.js');
 const Util = require('./Util.js');
 const MergeContext = require('./MergeContext.js');
 
@@ -37,6 +38,8 @@ class MergeStep {
                 const running = await context.runContext();
                 if (running)
                     break;
+                else if (!Merger.planned() && context.timeToWait)
+                    Merger.plan(context.timeToWait, context.number());
             } catch (e) {
                 this.errors++;
                 if (!prList.length)

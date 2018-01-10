@@ -28,6 +28,7 @@ class RepoMerger {
             let step = null;
             try {
                 this.rerun = false;
+                this.unplan();
                 step = new MergeStep();
                 await step.runStep();
             } catch (e) {
@@ -45,19 +46,20 @@ class RepoMerger {
     }
 
     plan(ms, prNum) {
+        assert(!this.planned());
         assert(ms >= 0);
         let date = new Date();
-        if (this._fireDate < date) // do cleanup (the timer already fired)
-            this._fireDate = null;
         date.setSeconds(date.getSeconds() + ms/1000);
-        if (this._fireDate && date >= this._fireDate)
-            return;
-        if (!this._timer === null)
-            clearTimeout(this._timer);
-        this._fireDate = date;
         this._timer = setTimeout(this.run.bind(this), ms);
         Logger.info("planning rerun for PR" + prNum + " in " + this._msToTime(ms));
     }
+
+    unplan() {
+        if (this.planned())
+            clearTimeout(this._timer);
+    }
+
+    planned() { return this._timer !== null; }
 
     // duration in ms
     _msToTime(duration) {

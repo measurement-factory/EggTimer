@@ -20,6 +20,7 @@ class MergeContext {
         this._pr = pr;
         this.tagSha = (tSha === undefined) ? null : tSha;
         this._shaLimit = 6;
+        this.timeToWait = null;
     }
 
     // Does all required processing for the PR towards merge.
@@ -169,13 +170,10 @@ class MergeContext {
         }
 
         // in ms
-        const timeToWait = await this._checkApproved();
-        if (timeToWait === null) // not approved or rejected
+        this.timeToWait = await this._checkApproved();
+        // not_approved/rejected or approved_and_waiting
+        if (this.timeToWait === null || this.timeToWait !== 0)
             return false;
-        else if (timeToWait !== 0) { // approved, but waiting
-            Merger.plan(timeToWait, this.number());
-            return false;
-        }
 
         const commitStatus = await this.checkStatuses(this.prHeadSha());
         if (commitStatus !== 'success') {
