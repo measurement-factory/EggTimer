@@ -2,7 +2,7 @@ const http = require('http');
 const createHandler = require('github-webhook-handler');
 const Config = require('./Config.js');
 const Log = require('./Logger.js');
-const RepoMerger = require('./RepoMerger.js');
+const Merger = require('./RepoMerger.js');
 
 const Logger = Log.Logger;
 
@@ -20,11 +20,7 @@ if (Config.host())
 else
     server.listen({port: Config.port()});
 
-
-const Merger = new RepoMerger();
-
 Merger.run();
-
 
 // events
 
@@ -59,6 +55,3 @@ WebhookHandler.on('push', (ev) => {
     Logger.info("push event:", e.ref);
     Merger.run();
 });
-
-module.exports = Merger;
-

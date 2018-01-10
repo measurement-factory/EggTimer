@@ -3,7 +3,6 @@ const Config = require('./Config.js');
 const Log = require('./Logger.js');
 const Logger = Log.Logger;
 const GH = require('./GitHubUtil.js');
-const Merger = require('./Main.js');
 const Util = require('./Util.js');
 const MergeContext = require('./MergeContext.js');
 
@@ -13,6 +12,8 @@ class MergeStep {
     constructor() {
         this.total = 0;
         this.errors = 0;
+        // the number of milliseconds to be re-run in
+        this.rerunIn = null;
     }
 
     // Gets PR list from GitHub and processes them one by one.
@@ -22,7 +23,7 @@ class MergeStep {
         Logger.info("runStep running");
         try {
             if (await this.resumeCurrent())
-                return; // still in-process
+                return true; // still in-process
         } catch (e) {
             Log.logError(e, "Exception");
             this.errors++;
@@ -35,17 +36,17 @@ class MergeStep {
             try {
                 let context = new MergeContext(prList.shift());
                 this.total++;
-                const running = await context.runContext();
-                if (running)
-                    break;
-                else if (!Merger.planned() && context.timeToWait)
-                    Merger.plan(context.timeToWait, context.number());
+                if (await context.runContext())
+                    return true;
+                if (!this.rerunIn && context.delay())
+                    this.rerunIn = context.delay();
             } catch (e) {
                 this.errors++;
                 if (!prList.length)
                     throw e;
             }
         }
+        return false;
     }
 
     // Looks for the being-in-merge PR and resumes its merging, if found.

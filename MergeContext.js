@@ -3,8 +3,8 @@ const endOfLine = require('os').EOL;
 const Config = require('./Config.js');
 const Log = require('./Logger.js');
 const GH = require('./GitHubUtil.js');
-const Merger = require('./Main.js');
 const Util = require('./Util.js');
+const Globals = require('./Globals.js');
 
 const commonParams = Util.commonParams;
 const Logger = Log.Logger;
@@ -20,43 +20,44 @@ class MergeContext {
         this._pr = pr;
         this.tagSha = (tSha === undefined) ? null : tSha;
         this._shaLimit = 6;
-        this.timeToWait = null;
+        // gets a value only if ready/ready_and_delayed
+        this._approvalDelay = null;
     }
 
     // Does all required processing for the PR towards merge.
-    // Returns 'true' if the PR is still in-process and
+    // Returns 'true' if the PR is in-process and
     // 'false' when the PR was successfully merged or skipped
-    // due to an error (e.g., failed staging checks).
+    // due to a reason (e.g., failed staging checks).
     async runContext() {
         try {
-            if (await this._process()) {
-                this._log("Still processing");
-                return true;
-            }
+            return await this._process();
         } catch (e) {
             this.logError(e, "MergeContext.runContext");
             // should re-run fast-forwarding failed due to a base change
             if (this.ffMergeFailed)
-                Merger.rerun = true;
+                Globals.Rerun = true;
             await this.cleanupUnexpectedError();
             throw e;
         }
-        return false;
     }
 
     async _process() {
-        let stillInProcess;
+        let inProcess;
         if (this.tagSha)
-            stillInProcess = !(await this._finishProcessing());
+            inProcess = !(await this._finishProcessing());
         else
-            stillInProcess = await this._startProcessing();
-        return stillInProcess;
+            inProcess = await this._startProcessing();
+        return inProcess;
     }
 
     // Returns 'true' if the PR passed all checks and merging started,
     // 'false' when the PR was skipped due to some failed checks.
     async _startProcessing() {
         if (!(await this._checkMergeConditions("checking merge preconditions...")))
+            return false;
+
+        // ready but in approval period
+        if (this._approvalDelay > 0)
             return false;
 
         if (Config.dryRun()) {
@@ -70,14 +71,12 @@ class MergeContext {
 
     // Returns 'true' if the PR processing was finished (it was merged or
     // an error occurred so that we need to start it from scratch);
-    // 'false' if the PR is still in-process (delayed for some reason);
+    // 'false' if the PR is still in-process (delayed for some reason).
     async _finishProcessing() {
-        if (await this._tagIsFresh()) {
-            if (!(await this._checkMergeConditions("checking merge postconditions..."))) {
-                await GH.deleteReference(this.mergingTag());
-                await this._labelMergeFailed();
-                return true;
-            }
+        if (this._needRestart()) {
+            await GH.deleteReference(this.mergingTag());
+            await this._labelMergeFailed();
+            return true;
         }
 
         if (Config.dryRun()) {
@@ -148,9 +147,19 @@ class MergeContext {
         return tagCommit.treeSha === prCommit.treeSha;
     }
 
+    // whether the being-in-merge PR state changed so that
+    // we should abort merging and start it from scratch
+    async _needRestart() {
+        if (!(await this._tagIsFresh()))
+            return true;
+        if (!(await this._checkMergeConditions("checking merge postconditions...")))
+            return true;
+        return false;
+    }
+
     // Checks whether the PR is ready for merge (all PR lamps are 'green').
     // Also forbids merging the already merged PR (marked with label) or
-    // if was interrupted by an event ('Merger.rerun' is true).
+    // if was interrupted by an event ('Globals.Rerun' is true).
     async _checkMergeConditions(desc) {
         this._log(desc);
 
@@ -169,12 +178,6 @@ class MergeContext {
             return false;
         }
 
-        // in ms
-        this.timeToWait = await this._checkApproved();
-        // not_approved/rejected or approved_and_waiting
-        if (this.timeToWait === null || this.timeToWait !== 0)
-            return false;
-
         const commitStatus = await this.checkStatuses(this.prHeadSha());
         if (commitStatus !== 'success') {
             this._log("commit status is " + commitStatus);
@@ -186,14 +189,20 @@ class MergeContext {
             return false;
         }
 
+        const delay = await this._checkApproved();
+        // not_approved
+        if (delay === null)
+            return false;
+
         if (!(await this._ignoreTag()))
             return false;
 
-        if (Merger.rerun) {
+        if (Globals.Rerun) {
             this._log("rerun");
             return false;
         }
 
+        this._approvalDelay = delay;
         return true;
     }
 
@@ -259,9 +268,8 @@ class MergeContext {
         }
     }
 
-    // If approved, returns number for milliseconds to wait (>=0),
-    // where returned zero means that no waiting required.
-    // If not approved (or rejected), returns null.
+    // If approved, returns the number for milliseconds to wait for,
+    // or '0', meaning 'ready'. If not approved, returns null.
     async _checkApproved() {
         const collaborators = await GH.getCollaborators();
         const pushCollaborators = collaborators.filter(c => c.permissions.push === true);
@@ -315,7 +323,6 @@ class MergeContext {
             return null;
         } else if (usersApproved.length >= Config.approvalsNumber()) {
             this._log(defaultMsg);
-            return 0;
         } else {
             assert(usersApproved.length < Config.approvalsNumber());
             const approvalPeriodMs = Config.approvalPeriod() * MsPerHour;
@@ -324,8 +331,8 @@ class MergeContext {
                 return approvalPeriodMs - prAgeMs;
             }
             this._log(defaultMsg + ", approval period finished");
-            return 0;
         }
+        return 0;
     }
 
     // returns one of:
@@ -431,6 +438,10 @@ class MergeContext {
     }
 
     // Getters
+
+    // the remainder of the approval period(in ms)
+    // or 'null'(not in approval period)
+    delay() { return this._approvalDelay; }
 
     number() { return this._pr.number; }
 
