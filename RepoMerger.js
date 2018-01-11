@@ -1,4 +1,5 @@
 const assert = require('assert');
+const Config = require('./Config.js');
 const Log = require('./Logger.js');
 const MergeStep = require('./PrMerger.js');
 const Util = require('./Util.js');
@@ -12,17 +13,22 @@ class RepoMerger {
         this._timer = null;
         this._fireDate = null;
         this.running = false;
+        this._server = null;
     }
 
     // prNum (if provided) corresponds to a PR, scheduled this 'run'
-    async run() {
+    async run(server) {
+        if (server) {
+            this._server = server;
+            Log.Logger.info("Listening on " + Config.port() + " ...");
+        }
+
         if (this.running) {
             Logger.info("Already running, planning rerun.");
             Globals.Rerun = true;
             return;
         }
 
-        Logger.info("running...");
         this.running = true;
         do {
             let step = null;
@@ -36,6 +42,10 @@ class RepoMerger {
             } catch (e) {
                 Log.logError(e, "RepoMerger.run");
                 Globals.Rerun = true;
+
+                Logger.info("closing HTTP server");
+                this._server.close(this.onServerClosed.bind(this));
+
                 const period = 10; // 10 min
                 Logger.info("next re-try in " + period + " minutes.");
                 await Util.sleep(period * 60 * 1000); // 10 min
@@ -45,6 +55,15 @@ class RepoMerger {
             }
         } while (Globals.Rerun);
         this.running = false;
+    }
+
+    onServerClosed() {
+        Logger.info("re-starting HTTP server...");
+        Util.StartServer(this._server, this.onServerRestarted.bind(this));
+    }
+
+    onServerRestarted() {
+        Log.Logger.info("restarted and listening on " + Config.port() + " ...");
     }
 
     plan(ms) {

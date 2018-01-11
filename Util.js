@@ -61,11 +61,19 @@ class ErrorContext extends Error {
     }
 }
 
+function StartServer(server, callback) {
+    if (Config.host())
+        server.listen({port: Config.port(), host: Config.host()}, callback);
+    else
+        server.listen({port: Config.port()}, callback);
+}
+
 module.exports = {
     sleep: sleep,
     commonParams: commonParams,
     TagRegex: TagRegex,
     MergingTag: MergingTag,
-    ErrorContext: ErrorContext
+    ErrorContext: ErrorContext,
+    StartServer: StartServer
 };
 

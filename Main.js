@@ -1,6 +1,7 @@
 const http = require('http');
 const createHandler = require('github-webhook-handler');
 const Config = require('./Config.js');
+const Util = require('./Util.js');
 const Log = require('./Logger.js');
 const Merger = require('./RepoMerger.js');
 
@@ -15,12 +16,7 @@ const server = http.createServer((req, res) => {
     });
 });
 
-if (Config.host())
-    server.listen({port: Config.port(), host: Config.host()});
-else
-    server.listen({port: Config.port()});
-
-Merger.run();
+Util.StartServer(server, Merger.run.bind(Merger, server));
 
 // events
 
