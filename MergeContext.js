@@ -43,8 +43,14 @@ class MergeContext {
 
     async _process() {
         let inProcess;
-        if (this.tagSha)
-            inProcess = !(await this._finishProcessing());
+        if (this.tagSha) {
+            // TODO: compare 'staging' commit and base HEAD instead
+            const baseSha = await GH.getReference(this.prBaseBranchPath());
+            if (this.tagSha === baseSha) // already merged
+                inProcess = !(await this._finishProcessing());
+            else
+                inProcess = !(await this._cleanupMerged());
+        }
         else
             inProcess = await this._startProcessing();
         return inProcess;
@@ -91,8 +97,7 @@ class MergeContext {
         }
 
         await this._finishMerging();
-        await this._cleanupMerged();
-        return true;
+        return await this._cleanupMerged();
     }
 
     // Tries to load 'merge tag' for the PR.
@@ -240,12 +245,19 @@ class MergeContext {
         }
     }
 
-    // adjusts the successfully merged PR (labels, status, tag)
+    // Adjusts the successfully merged PR (labels, status, tag).
+    // Returns 'true' if the PR cleaup was completed, 'false'
+    // otherwise.
     async _cleanupMerged() {
+        if (Config.dryRun()) {
+            this._warnDryRun("cleanup merged");
+            return false;
+        }
         this._log("cleanup...");
         await this._labelMerged();
         await GH.updatePR(this.number(), 'closed');
         await GH.deleteReference(this.mergingTag());
+        return true;
     }
 
     // does not throw
@@ -463,7 +475,6 @@ class MergeContext {
     prMessageValid() {
         const lines = this.prMessage().split('\n');
         for (let line of lines) {
-            Logger.info("Line length: " + line.length);
             if (line.length > 72)
                 return false;
         }
