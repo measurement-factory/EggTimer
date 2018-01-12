@@ -51,14 +51,17 @@ class ConfigOptions {
 
     // fast-forward merge failed
     mergeFailedLabel() { return "S-merge-failed"; }
-    // Some of required staging checks failed
+    // some of required staging checks failed
     stagingChecksFailedLabel() { return "S-staging-checks-failed"; }
     // fast-forward merge succeeded
     mergedLabel() { return "S-merged"; }
-    // Merge started (tag and staging branch successfully adjusted)
+    // merge started (tag and staging branch successfully adjusted)
     mergingLabel() { return "S-merging"; }
     // Merge succeeded up to fast-forward step. For testing purpose.
     mergeReadyLabel() { return "S-merge-ready"; }
+    // PR message does not satisfy to requirements (e.g., lines
+    // should have <= 72 characters)
+    invalidMessageLabel() { return "S-invalid-message"; }
 }
 
 const Config = new ConfigOptions('config.json');

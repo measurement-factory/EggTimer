@@ -173,6 +173,14 @@ class MergeContext {
             return false;
         }
 
+        if (!this.prMessageValid()) {
+            this._log("invalid PR message");
+            await this.addLabel(Config.invalidMessageLabel());
+            return false;
+        } else {
+            await this.removeLabel(Config.invalidMessageLabel());
+        }
+
         if (!this.prMergeable()) {
             this._log("not mergeable yet.");
             return false;
@@ -450,6 +458,16 @@ class MergeContext {
     prMessage() {
         return this._pr.title + endOfLine + this._pr.body + endOfLine +
             "(PR #" + this._pr.number + ")";
+    }
+
+    prMessageValid() {
+        const lines = this.prMessage().split('\n');
+        for (let line of lines) {
+            Logger.info("Line length: " + line.length);
+            if (line.length > 72)
+                return false;
+        }
+        return true;
     }
 
     prAuthor() { return this._pr.user.login; }
