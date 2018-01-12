@@ -3,7 +3,6 @@ const Config = require('./Config.js');
 const Log = require('./Logger.js');
 const MergeStep = require('./PrMerger.js');
 const Util = require('./Util.js');
-const Globals = require('./Globals.js');
 
 const Logger = Log.Logger;
 
@@ -12,6 +11,7 @@ class RepoMerger {
     constructor() {
         this._timer = null;
         this._fireDate = null;
+        this._rerun = false;
         this.running = false;
         this._server = null;
     }
@@ -25,7 +25,7 @@ class RepoMerger {
 
         if (this.running) {
             Logger.info("Already running, planning rerun.");
-            Globals.Rerun = true;
+            this._rerun = true;
             return;
         }
 
@@ -33,15 +33,15 @@ class RepoMerger {
         do {
             let step = null;
             try {
-                Globals.Rerun = false;
+                this._rerun = false;
                 this.unplan();
                 step = new MergeStep();
                 await step.runStep();
-                if (!Globals.Rerun && step.rerunIn)
+                if (!this._rerun && step.rerunIn !== null)
                     this.plan(step.rerunIn);
             } catch (e) {
                 Log.logError(e, "RepoMerger.run");
-                Globals.Rerun = true;
+                this._rerun = true;
 
                 Logger.info("closing HTTP server");
                 this._server.close(this.onServerClosed.bind(this));
@@ -53,7 +53,7 @@ class RepoMerger {
                 if (step)
                     step.logStatistics();
             }
-        } while (Globals.Rerun);
+        } while (this._rerun);
         this.running = false;
     }
 
@@ -69,6 +69,10 @@ class RepoMerger {
     plan(ms) {
         assert(!this.planned());
         assert(ms >= 0);
+        if (ms === 0) {
+            this._rerun = true;
+            return;
+        }
         let date = new Date();
         date.setSeconds(date.getSeconds() + ms/1000);
         this._timer = setTimeout(this.run.bind(this), ms);

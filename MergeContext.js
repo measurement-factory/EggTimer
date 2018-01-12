@@ -4,7 +4,6 @@ const Config = require('./Config.js');
 const Log = require('./Logger.js');
 const GH = require('./GitHubUtil.js');
 const Util = require('./Util.js');
-const Globals = require('./Globals.js');
 
 const commonParams = Util.commonParams;
 const Logger = Log.Logger;
@@ -34,11 +33,12 @@ class MergeContext {
         } catch (e) {
             this.logError(e, "MergeContext.runContext");
             // should re-run fast-forwarding failed due to a base change
-            if (this.ffMergeFailed)
-                Globals.Rerun = true;
-            await this.cleanupUnexpectedError();
-            throw e;
+            if (!this.ffMergeFailed) {
+                await this.cleanupUnexpectedError();
+                throw e;
+            }
         }
+        return false;
     }
 
     async _process() {
@@ -163,8 +163,7 @@ class MergeContext {
     }
 
     // Checks whether the PR is ready for merge (all PR lamps are 'green').
-    // Also forbids merging the already merged PR (marked with label) or
-    // if was interrupted by an event ('Globals.Rerun' is true).
+    // Also forbids merging the already merged PR (marked with label).
     async _checkMergeConditions(desc) {
         this._log(desc);
 
@@ -178,12 +177,12 @@ class MergeContext {
             return false;
         }
 
-        if (!this.prMessageValid()) {
+        const messageValid = this.prMessageValid();
+        if (!Config.dryRun())
+            this._labelCheckMessage(messageValid);
+        if (!messageValid) {
             this._log("invalid PR message");
-            await this.addLabel(Config.invalidMessageLabel());
             return false;
-        } else {
-            await this.removeLabel(Config.invalidMessageLabel());
         }
 
         if (!this.prMergeable()) {
@@ -209,11 +208,6 @@ class MergeContext {
 
         if (!(await this._ignoreTag()))
             return false;
-
-        if (Globals.Rerun) {
-            this._log("rerun");
-            return false;
-        }
 
         this._approvalDelay = delay;
         return true;
@@ -423,6 +417,14 @@ class MergeContext {
             }
             throw e;
         }
+    }
+
+    async _labelCheckMessage(isValid) {
+        const label = Config.invalidMessageLabel();
+        if (isValid)
+            await this.removeLabel(label);
+        else
+            await this.addLabel(label);
     }
 
     async _labelMerging() {

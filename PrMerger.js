@@ -12,7 +12,8 @@ class MergeStep {
     constructor() {
         this.total = 0;
         this.errors = 0;
-        // the number of milliseconds to be re-run in
+        // the number of milliseconds to be re-run in,
+        // zero means re-run immediately
         this.rerunIn = null;
     }
 
@@ -38,6 +39,11 @@ class MergeStep {
                 this.total++;
                 if (await context.runContext())
                     return true;
+                // consider optimization: rerun only this failed PR
+                if (context.ffMergeFailed) {
+                    this.rerunIn = 0; // rerun immediately
+                    return false;
+                }
                 if (!this.rerunIn && context.delay())
                     this.rerunIn = context.delay();
             } catch (e) {
