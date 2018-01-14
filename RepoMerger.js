@@ -1,7 +1,7 @@
 const assert = require('assert');
 const Config = require('./Config.js');
 const Log = require('./Logger.js');
-const MergeStep = require('./PrMerger.js');
+const PrMerger = require('./PrMerger.js');
 const Util = require('./Util.js');
 
 const Logger = Log.Logger;
@@ -35,7 +35,7 @@ class RepoMerger {
             try {
                 this._rerun = false;
                 this.unplan();
-                step = new MergeStep();
+                step = new PrMerger();
                 await step.runStep();
                 if (!this._rerun && step.rerunIn !== null)
                     this.plan(step.rerunIn);

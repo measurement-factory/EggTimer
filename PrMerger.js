@@ -7,7 +7,7 @@ const Util = require('./Util.js');
 const MergeContext = require('./MergeContext.js');
 
 // Gets PR list from GitHub and processes some/all PRs from this list.
-class MergeStep {
+class PrMerger {
 
     constructor() {
         this.total = 0;
@@ -116,9 +116,9 @@ class MergeStep {
     logStatistics() {
         Logger.info("Merge step finished. Total PRs processed: " + this.total + ", skipped due to errors: " + this.errors);
     }
-} // MergeStep
+} // PrMerger
 
 
-module.exports = MergeStep;
+module.exports = PrMerger;
 
 
