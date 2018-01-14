@@ -143,6 +143,25 @@ function createCommit(treeSha, message, parents) {
   });
 }
 
+// returns one of: "ahead", "behind", "identical" or "diverged"
+function compareCommits(baseRef, headRef) {
+    let params = commonParams();
+    params.base = baseRef;
+    params.head = headRef;
+    return new Promise( (resolve, reject) => {
+        GitHub.authenticate(GitHubAuthentication);
+        GitHub.repos.compareCommits(params, (err, res) => {
+            if (err) {
+                reject(new ErrorContext(err, compareCommits.name, params));
+                return;
+            }
+            const result = {status: res.data.status};
+            logApiResult(compareCommits.name, params, result);
+            resolve(res.data.status);
+        });
+  });
+}
+
 function getReference(ref) {
     let params = commonParams();
     params.ref = ref;
@@ -217,6 +236,10 @@ function updateReference(ref, sha, force) {
     });
 }
 
+// For the record: GitHub returns 422 error if there is no such
+// reference 'refs/:sha', and 404 if there is no such tag 'tags/:tag'.
+// Once I saw that both errors can be returned, so looks like this
+// GitHub behavior is unstable.
 function deleteReference(ref) {
     assert(!Config.dryRun());
     let params = commonParams();
@@ -330,6 +353,7 @@ module.exports = {
     getStatuses: getStatuses,
     getCommit: getCommit,
     createCommit: createCommit,
+    compareCommits: compareCommits,
     getReference: getReference,
     getTags: getTags,
     createReference: createReference,

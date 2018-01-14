@@ -22,13 +22,8 @@ class MergeStep {
     // there is a PR still-in-merge.
     async runStep() {
         Logger.info("runStep running");
-        try {
-            if (await this.resumeCurrent())
-                return true; // still in-process
-        } catch (e) {
-            Log.logError(e, "Exception");
-            this.errors++;
-        }
+        if (await this.resumeCurrent())
+            return true; // still in-process
 
         const prList = await GH.getPRList();
         prList.sort((pr1, pr2) => { return new Date(pr1.created_at) - new Date(pr2.created_at); });
@@ -37,14 +32,10 @@ class MergeStep {
             try {
                 let context = new MergeContext(prList.shift());
                 this.total++;
-                if (await context.runContext())
+                if (await context.startProcessing())
                     return true;
-                // consider optimization: rerun only this failed PR
-                if (context.ffMergeFailed) {
-                    this.rerunIn = 0; // rerun immediately
-                    return false;
-                }
-                if (!this.rerunIn && context.delay())
+                // the first found will give us the minimal delay
+                if (this.rerunIn === null && context.delay())
                     this.rerunIn = context.delay();
             } catch (e) {
                 this.errors++;
@@ -55,29 +46,26 @@ class MergeStep {
         return false;
     }
 
-    // Looks for the being-in-merge PR and resumes its merging, if found.
-    // If such PR was found and its merging not yet finished, returns 'true'.
-    // If no such PR was found or its merging was finished, returns 'false'.
+    // Looks for the being-in-merge PR and resumes its processing, if found.
+    // Returns whether we are still processing the current PR (so that we can
+    // not start the next one):
+    // 'true': current PR was found and its processing not yet finished.
+    // 'false': the PR was found and it's processing was finished (succeeded
+    //  or failed due to an error).
     async resumeCurrent() {
-        let context = await this._current();
+        const context = await this._current();
         if (!context)
             return false;
-
         this.total = 1;
-
-        const commitStatus = await context.checkStatuses(context.tagSha);
-
-        if (commitStatus === 'pending') {
-            Logger.info("waiting for more staging checks completing");
-            return true;
-        } else if (commitStatus === 'success') {
-            Logger.info("staging checks succeeded");
-            // TODO: log whether that staging_branch points to us.
-            // return 'continue';
-            return await context.runContext();
-        } else {
-            assert(commitStatus === 'failure');
-            return false;
+        try {
+            const finished = await context.finishProcessing();
+            return !finished;
+        } catch (e) {
+            this.errors++;
+            if (context.ffMergeFailed)
+                return false;
+            Log.logError(e, "resumeCurrent");
+            throw e;
         }
     }
 
@@ -114,19 +102,12 @@ class MergeStep {
         }
         assert(tagName === Util.MergingTag(prNum));
 
-        let stagingPr = null;
-        try {
-            stagingPr = await GH.getPR(prNum, false);
-            if (stagingPr.state !== 'open') {
-                Logger.error("PR" + prNum + " was unexpectedly closed");
-                if (!Config.dryRun())
-                    await GH.deleteReference(tagName);
-                return null;
-            }
-        } catch (e) {
+        let stagingPr = await GH.getPR(prNum, false);
+        if (stagingPr.state !== 'open') {
+            Logger.error("PR" + prNum + " was unexpectedly closed");
             if (!Config.dryRun())
                 await GH.deleteReference(tagName);
-            throw e;
+            return null;
         }
 
         return new MergeContext(stagingPr, stagingSha);

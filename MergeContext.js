@@ -23,42 +23,9 @@ class MergeContext {
         this._approvalDelay = null;
     }
 
-    // Does all required processing for the PR towards merge.
-    // Returns 'true' if the PR is in-process and
-    // 'false' when the PR was successfully merged or skipped
-    // due to a reason (e.g., failed staging checks).
-    async runContext() {
-        try {
-            return await this._process();
-        } catch (e) {
-            this.logError(e, "MergeContext.runContext");
-            // should re-run fast-forwarding failed due to a base change
-            if (!this.ffMergeFailed) {
-                await this.cleanupUnexpectedError();
-                throw e;
-            }
-        }
-        return false;
-    }
-
-    async _process() {
-        let inProcess;
-        if (this.tagSha) {
-            // TODO: compare 'staging' commit and base HEAD instead
-            const baseSha = await GH.getReference(this.prBaseBranchPath());
-            if (this.tagSha === baseSha) // already merged
-                inProcess = !(await this._finishProcessing());
-            else
-                inProcess = !(await this._cleanupMerged());
-        }
-        else
-            inProcess = await this._startProcessing();
-        return inProcess;
-    }
-
     // Returns 'true' if the PR passed all checks and merging started,
     // 'false' when the PR was skipped due to some failed checks.
-    async _startProcessing() {
+    async startProcessing() {
         if (!(await this._checkMergeConditions("checking merge preconditions...")))
             return false;
 
@@ -78,10 +45,22 @@ class MergeContext {
     // Returns 'true' if the PR processing was finished (it was merged or
     // an error occurred so that we need to start it from scratch);
     // 'false' if the PR is still in-process (delayed for some reason).
-    async _finishProcessing() {
-        if (this._needRestart()) {
-            await GH.deleteReference(this.mergingTag());
-            await this._labelMergeFailed();
+    async finishProcessing() {
+
+        const commitStatus = await this._checkStatuses(this.tagSha);
+        if (commitStatus === 'pending') {
+            Logger.info("waiting for more staging checks completing");
+            return false;
+        } else if (commitStatus === 'success') {
+            Logger.info("staging checks succeeded");
+        } else {
+            assert(commitStatus === 'failure');
+            Logger.info("staging checks failed");
+            if (Config.dryRun()) {
+                this._warnDryRun("finish merging");
+                return false;
+            }
+            await this._cleanupMergeFailed();
             return true;
         }
 
@@ -96,6 +75,18 @@ class MergeContext {
             return false;
         }
 
+        const compareStatus = await GH.compareCommits(this.prBaseBranch(), this.mergingTag());
+
+        if (compareStatus === "identical" || compareStatus === "behind")
+            return await this._cleanupMerged();
+
+        if (await this._needRestart()) {
+            // compareStatus can be "diverged" here, if the base changed
+            await this._cleanupMergeFailed();
+            return true;
+        }
+
+        assert(compareStatus === "ahead");
         await this._finishMerging();
         return await this._cleanupMerged();
     }
@@ -121,7 +112,7 @@ class MergeContext {
         if (!this.tagSha)
             return true;
 
-        const commitStatus = await this.checkStatuses(this.tagSha);
+        const commitStatus = await this._checkStatuses(this.tagSha);
         if (commitStatus !== 'failure')
             return true;
 
@@ -190,7 +181,7 @@ class MergeContext {
             return false;
         }
 
-        const commitStatus = await this.checkStatuses(this.prHeadSha());
+        const commitStatus = await this._checkStatuses(this.prHeadSha());
         if (commitStatus !== 'success') {
             this._log("commit status is " + commitStatus);
             return false;
@@ -234,6 +225,7 @@ class MergeContext {
             if (e.name === 'ErrorContext' && e.unprocessable()) {
                 this._log("fast-forwarding failed");
                 this.ffMergeFailed = true;
+                await this._cleanupMergeFailed();
             }
             throw e;
         }
@@ -247,39 +239,23 @@ class MergeContext {
             this._warnDryRun("cleanup merged");
             return false;
         }
-        this._log("cleanup...");
+        this._log("merged, cleanup...");
         await this._labelMerged();
         await GH.updatePR(this.number(), 'closed');
+        assert(0);
         await GH.deleteReference(this.mergingTag());
         return true;
     }
 
     // does not throw
-    async cleanupUnexpectedError() {
+    async _cleanupMergeFailed() {
         if (Config.dryRun()) {
-            this._warnDryRun("cleanup on error");
+            this._warnDryRun("cleanup merge failed");
             return;
         }
-        this._log("cleanup on unexpected error...");
-        // delete merging tag, if exists
-        try {
-            await GH.deleteReference(this.mergingTag());
-        } catch (e) {
-            // For the record: GitHub returns 422 error if there is no such
-            // reference 'refs/:sha', and 404 if there is no such tag 'tags/:tag'.
-            // TODO: once I saw that both errors can be returned, so looks
-            // like this GitHub behavior is unstable.
-            if (e.name === 'ErrorContext' && e.notFound())
-                this._log(this.mergingTag() + "tag not found");
-            else
-                this.logError(e, "MergeContext.cleanupUnexpectedError");
-        }
-
-        try {
-            await this._labelMergeFailed();
-        } catch (e) {
-            this.logError(e, "MergeContext.cleanupUnexpectedError");
-        }
+        this._log("merge failed, cleanup...");
+        await this._labelMergeFailed();
+        await GH.deleteReference(this.mergingTag());
     }
 
     // If approved, returns the number for milliseconds to wait for,
@@ -353,7 +329,7 @@ class MergeContext {
     // 'pending' if some of required checks are 'pending'
     // 'success' if all of required are 'success'
     // 'error' otherwise
-    async checkStatuses(ref) {
+    async _checkStatuses(ref) {
 
         const requiredContexts = await GH.getProtectedBranchRequiredStatusChecks(this.prBaseBranch());
         // https://developer.github.com/v3/repos/statuses/#get-the-combined-status-for-a-specific-ref
