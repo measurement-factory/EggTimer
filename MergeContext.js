@@ -263,6 +263,14 @@ class MergeContext {
     async _checkApproved() {
         const collaborators = await GH.getCollaborators();
         const pushCollaborators = collaborators.filter(c => c.permissions.push === true);
+        const requestedReviewers = this.prRequestedReviewers();
+
+        for (let collaborator of pushCollaborators) {
+            if (requestedReviewers.includes(collaborator.login)) {
+                this._log("requested core reviewer: " + collaborator.login);
+                return null;
+            }
+        }
 
         let reviews = await GH.getReviews(this.number());
 
@@ -457,6 +465,15 @@ class MergeContext {
                 return false;
         }
         return true;
+    }
+
+    prRequestedReviewers() {
+        let reviewers = [];
+        if (this._pr.requested_reviewers) {
+            for (let r of this._pr.requested_reviewers)
+               reviewers.push(r.login);
+        }
+        return reviewers;
     }
 
     prAuthor() { return this._pr.user.login; }
