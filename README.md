@@ -26,16 +26,20 @@ request eligibility and merging steps are detailed further below.
 A pull request is ready for merging if all of the following conditions
 are satisfied:
 
-* The PR is open (TODO: Check that a PR closed right _after_ we got a
-  list of PRs will not be merged!)
-* The PR has GitHub 'mergeable' status. TODO: Document how a GitHub user
-  can tell whether a PR has a GitHub 'mergeable' status.
-* All the _required_ checks have succeeded on the (possibly stale) PR
-  branch. GitHub says "All checks have passed" next to a green check
-  mark. TODO: Show the right message screenshot here if possible. TODO:
-  What does GitHub say when an optional check has failed but all the
-  required ones have passed?
+* The PR is open.
+* The PR has GitHub `mergeable` status. In this case, GitHub displays
+  "This branch has no conflicts with the base branch" message next
+  to a green check mark.
+* All the _required_ checks have succeeded on the (possibly stale)
+  PR branch.
+  GitHub says "All checks have passed" next to a green check mark:
+  ![](https://help.github.com/assets/images/help/repository/req-status-check-all-passed.png)
+  If an optional check has failed, but all required ones have passed,
+  GitHub will show "Some checks were not successful" message:
+  ![](https://help.github.com/assets/images/help/repository/req-status-check-admin-merge.png)
 * The PR is approved for merging (see below for voting rules).
+* The PR has a valid PR title and PR description (see below about
+  writing PR descriptions).
 * The PR does not have an `S-merged` label.
 
 Satisfying the above conditions results in an attempt to merge the pull
@@ -47,28 +51,22 @@ request (in FIFO order), but PR merging may still fail.
 Each open pull request is processed according to the following
 algorithm:
 
-1. Reset the staging (a.k.a. "auto") branch to point at the last commit
-   of the PR target branch (usually "master").
-2. Squash-merge the PR branch into the staging branch, using PR title
-   (with an appended PR number) and the PR description as the commit
-   message. TODO: What happens to long paragraph lines often present in
-   the PR description? We should either reject PRs that have long lines
-   or, if it can be done safely, automatically wrap them using some
-   formatting library.
-3. Test the staging branch. That is, wait for GitHub to report CI test
+1. Create a new commit ("staging commit") as a copy of the PR [merge commit](https://developer.github.com/v3/pulls/#get-a-single-pull-request),
+   with the following attributes:
+   * parent revision as the PR base branch HEAD revision
+   * commit message as the PR title (with appended PR number) and the
+     PR description
+2. Reset the staging (a.k.a. "auto") branch to the PR staging commit.
+3. Mark the staging commit with a tag ("merge tag"). The tag holds
+   the being-in-merge PR number, which is used by the bot in next steps.
+4. Test the staging branch. That is, wait for GitHub to report CI test
    results for the staging branch.
-4. Reset the PR target branch (usually "master") to point at the
-   now-tested commit on the staging branch.
-5. Mark the PR as merged.
-6. Close the PR and remove its tag. Failures at this step are ignored.
+5. Reset the PR target branch (usually "master") to the now-tested
+   staging commit on the staging branch.
+6. Mark the PR as merged, close the PR and remove its tag.
 
-XXX: The above is missing the tagging step, with a brief explanation of
-what that tag means and/or why it is needed.
-
-If a bot is killed while executing the above algorithm, it (XXX:
-document what happens. I suspect we redo some of the steps and resume
-execution of other steps, depending on the state, but it is not clear to
-me which steps the bot avoids repeating).
+If a bot is killed while executing the above algorithm, it will
+resume executing from the step it was interrupted at.
 
 While the bot is merging a pull request, it does not touch other PRs. If
 the bot receives a GitHub event while merging a pull request, then the
@@ -86,10 +84,7 @@ A bot that cannot parse its configuration quits.
 When encountering PR-unrelated problems (e.g., network I/O timeouts or
 internal GitHub server errors), the bot sleeps for 10 minutes
 (hard-coded) and then effectively restarts. Only the already parsed
-configuration is preserved across such restarts. XXX: Let's restart
-everything except configuration parsing in this case instead of assuming
-that the global state such as the HTTP server object is still in a good
-working order.
+configuration is preserved across such restarts.
 
 If a PR processing step fails for PR-specific reasons (e.g., a CI test
 failure), then the bot moves on to the next pull request, marking the
@@ -108,9 +103,8 @@ request state:
   that the failed checks are no longer fresh/applicable.
 * S-merge-ready: Duplicates GitHub "green check" mark for the staging
   branch commit. The bot removes this label before it updates the PR
-  target branch. (TODO: Remove due to very short lifetime and being low
-  on information? All S-merged and S-merge-failed PRs are S-merge-ready
-  for a brief moment...)
+  target branch. Applied only if `config::skip_merge` option is on
+  (see below).
 * S-merge-failed: Unrecoverable failure other than the staging branch
   test failure (the latter is marked with `S-staging-checks-failed`). The
   bot ignores this PR until the PR branch or its target branch change.
@@ -118,17 +112,27 @@ request state:
 * S-merged: The PR was successfully merged (and probably closed). The
   bot will not attempt to merge this PR again even if it is reopened.
   The bot never removes this label.
+* S-invalid-message: The PR title and(or) message is invalid (see
+  below about writing PR descriptions).
 
 Note that all labels, except `S-merged` are ignored by the bot itself.
 
 TODO: Rename all the remaining labels to form a cohesive set, probably
 with a dedicated prefix like "M-".
 
+## Writing PR descriptions
+
+The PR description and title must conform to a common 72 characters/line
+rule. Bot ignores PRs with long descriptions, marking it with
+`S-invalid-message` label.
+
 
 ## Voting and PR approvals
 
 A single negative vote by a core developer disqualifies the pull request
-from automatic merging. If there are no such votes, a PR is considered
+from automatic merging. Also a pull request is postponed from the merging
+until there is a requested pull request review from a core develper.
+If there are no such votes and requested reviews, a PR is considered
 approved for merging if either of the following two conditions is met:
 
 * Fast track: A PR has at least two approvals
@@ -164,14 +168,11 @@ Properly counting such votes is a missing feature.
 
 ## Bot lifecycle
 
-The bot may be started like any node,js script. For example:
+The bot may be started like any node.js script. For example:
 
 ```
 node eggtimer.js
 ```
-
-XXX: Support specifying bot configuration file name as (the only)
-command line parameter.
 
 The bot can be safely killed and started at any time because it uses the
 public/remote GitHub repository to store PR processing state. The bot
@@ -207,16 +208,17 @@ All configuration fields are required (XXX: Why is there a "default" column in t
 *github_token* | An authentication token generated for the associated `config::github_username`. | -
 *github_webhook_path* | GitHub webhook URL path. | -
 *github_webhook_secret* | A random secret string to be used here and in the GitHub webhook configuration. | -
+*host* | The bot listens for GitHub requests on this IP address. If omitted, the bot will listen on all available IP interfaces. | -
 *port* | The bot listens for GitHub requests on this TCP port. | 7777
 *repo* | The name of the GitHub repository that the bot should serve. | -
 *owner* | The owner (a person or organization) of the GitHub repository. | -
 *dry_run*| A boolean option to enable read-only, no-modifications mode where the bot logs pull requests selected for merging but skips further merging steps.| false
 *skip_merge*| A boolean option to enable no-final-modifications mode where the bot performs all the merging steps up to (and not including) the target branch update. Eligible PRs are merged into and tested on the staging branch but are never merged into their target branches. | false
 *staging_branch* | The name of the staging branch. | auto
-*necessary_approvals* | The minimal number of "core" developers required for a PR to become eligible for merging. PRs with fewer votes are not merged, regardless of their age. | 2
-*voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. PR age is measured in days from the PR creation time. | 2
+*necessary_approvals* | The minimal number of "core" developers required for a PR to become eligible for merging. PRs with fewer votes are not merged, regardless of their age. | 1
+*voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. PR age is measured in hours from the PR creation time. | 48
 *sufficient_approvals* | The minimal number of core developers required for a PR to be merged fast (i.e., without waiting for `config::voting_delay_max`) | 2
-*voting_delay_max* | The minimum merging age of a PR that has fewer than `config::sufficient_approvals` votes. PR age is measured in days from the PR creation time. | 10
+*voting_delay_max* | The maximum merging age of a PR that has fewer than `config::sufficient_approvals` votes. PR age is measured in hours from the PR creation time. | 240
 
 
 ## Caveats
@@ -228,9 +230,6 @@ given pull request. It is possible that a checked condition changes
 during or after that initial check. There is no guarantee that the bot
 will notice such "late" changes. Similar race conditions exist for
 manual PR merging, of course.
-
-TODO: Should the bot recheck the conditions again after all staging
-branch tests are over?
 
 
 ### GitHub does not know that a PR was merged
