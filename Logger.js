@@ -17,8 +17,9 @@ Logger.addStream({name: "eggtimer-out", stream: process.stdout});
 
 function logError(err, context) {
     assert(context);
-    let msg = context + ": " + err.message;
-    if ('stack' in err)
+    let msg = (err.message === undefined) ? JSON.stringify(err) : err.message;
+    msg = context + ": " + msg;
+    if (err.stack !== undefined)
         msg += " " + err.stack.toString();
     Logger.error(msg);
 }

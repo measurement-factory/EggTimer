@@ -170,7 +170,7 @@ class MergeContext {
 
         const messageValid = this.prMessageValid();
         if (!Config.dryRun())
-            this._labelCheckMessage(messageValid);
+            await this._labelCheckMessage(messageValid);
         if (!messageValid) {
             this._log("invalid PR message");
             return false;
