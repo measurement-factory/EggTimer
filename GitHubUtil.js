@@ -45,10 +45,12 @@ function getLabels(prNum) {
     });
 }
 
+// Gets a PR from GitHub, waiting for a period until GitHub calculates
+// it's 'mergeable' flag. Afther the period, returns the PR as is.
 async function getPR(prNum, awaitMergeable) {
     const max = 64 * 1000 + 1; // ~2 min. overall
     for (let d = 1000; d < max; d *= 2) {
-        const pr = await requestPR(prNum);
+        const pr = await getRawPR(prNum);
         if (!awaitMergeable || pr.mergeable !== null)
             return pr;
         Log.Logger.info("PR" + prNum + ": GitHub still caluclates mergeable status. Will retry in " + (d/1000) + " seconds");
@@ -58,18 +60,19 @@ async function getPR(prNum, awaitMergeable) {
                 getPR.name, {pr: prNum}));
 }
 
-function requestPR(prNum) {
+// gets a PR from GitHub (as is)
+function getRawPR(prNum) {
     let params = commonParams();
     params.number = prNum;
     return new Promise( (resolve, reject) => {
         GitHub.authenticate(GitHubAuthentication);
         GitHub.pullRequests.get(params, (err, pr) => {
             if (err) {
-                reject(new ErrorContext(err, requestPR.name, params));
+                reject(new ErrorContext(err, getRawPR.name, params));
                 return;
             }
             const result = {number: pr.data.number};
-            logApiResult(requestPR.name, params, result);
+            logApiResult(getRawPR.name, params, result);
             resolve(pr.data);
        });
    });
