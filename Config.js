@@ -64,6 +64,7 @@ class ConfigOptions {
     invalidMessageLabel() { return "S-invalid-message"; }
 }
 
-const Config = new ConfigOptions('config.json');
+const configFile = process.argv.length > 2 ? process.argv[2] : './config.json';
+const Config = new ConfigOptions(configFile);
 
 module.exports = Config;
