@@ -15,10 +15,11 @@ class ConfigOptions {
         this._stagingBranch = conf.staging_branch;
         this._dryRun = conf.dry_run;
         this._skipMerge = conf.skip_merge;
-        this._approvalsNumber = conf.approvals_number;
-        assert(this._approvalsNumber > 1);
-        this._approvalPeriod = conf.approval_period; // in hours
-        this._rejectPeriod = conf.reject_period; // in hours
+        this._necessaryApprovals = conf.necessary_approvals;
+        this._sufficientApprovals = conf.sufficient_approvals;
+        assert(this._sufficientApprovals > 1);
+        this._votingDelayMax = conf.voting_delay_max; // in hours
+        this._votingDelayMin = conf.voting_delay_min; // in hours
         this._loggerType = conf.logger_type;
         this._loggerPath = conf.logger_path;
         this._loggerPeriod = conf.logger_period;
@@ -41,9 +42,10 @@ class ConfigOptions {
     stagingBranch() { return "heads/" + this._stagingBranch + "_branch"; }
     dryRun() { return this._dryRun; }
     skipMerge() { return this._skipMerge; }
-    approvalsNumber() { return this._approvalsNumber; }
-    approvalPeriod() { return this._approvalPeriod; }
-    rejectPeriod() { return this._rejectPeriod; }
+    necessaryApprovals() { return this._necessaryApprovals; }
+    sufficientApprovals() { return this._sufficientApprovals; }
+    votingDelayMax() { return this._votingDelayMax; }
+    votingDelayMin() { return this._votingDelayMin; }
     loggerType() { return this._loggerType; }
     loggerPath() { return this._loggerPath; }
     loggerPeriod() { return this._loggerPeriod; }

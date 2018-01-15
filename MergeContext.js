@@ -275,10 +275,10 @@ class MergeContext {
         let reviews = await GH.getReviews(this.number());
 
         const prAgeMs = new Date() - new Date(this.createdAt());
-        const rejectPeriodMs = Config.rejectPeriod() * MsPerHour;
-        if (prAgeMs < rejectPeriodMs) {
-            this._log("in reject period");
-            return rejectPeriodMs - prAgeMs;
+        const votingDelayMinMs = Config.votingDelayMin() * MsPerHour;
+        if (prAgeMs < votingDelayMinMs) {
+            this._log("in minimal voting period");
+            return votingDelayMinMs - prAgeMs;
         }
 
         // An array of [{reviewer, date, status}] elements,
@@ -316,19 +316,19 @@ class MergeContext {
         const usersApproved = usersVoted.filter(u => u.state !== 'changes_requested');
 
         const defaultMsg = "approved by " + usersApproved.length + " core developer(s)";
-        if (usersApproved.length === 0) {
-            this._log("not approved");
+        if (usersApproved.length < Config.necessaryApprovals()) {
+            this._log("not approved by necessary " + Config.necessaryApprovals() + " votes");
             return null;
-        } else if (usersApproved.length >= Config.approvalsNumber()) {
+        } else if (usersApproved.length >= Config.sufficientApprovals()) {
             this._log(defaultMsg);
         } else {
-            assert(usersApproved.length < Config.approvalsNumber());
-            const approvalPeriodMs = Config.approvalPeriod() * MsPerHour;
-            if (prAgeMs < approvalPeriodMs) {
-                this._log(defaultMsg + ", in approval period");
-                return approvalPeriodMs - prAgeMs;
+            assert(usersApproved.length < Config.sufficientApprovals());
+            const votingDelayMaxMs = Config.votingDelayMax() * MsPerHour;
+            if (prAgeMs < votingDelayMaxMs) {
+                this._log(defaultMsg + ", in maximum voting period");
+                return votingDelayMaxMs - prAgeMs;
             }
-            this._log(defaultMsg + ", approval period finished");
+            this._log(defaultMsg + ", maximum voting period finished");
         }
         return 0;
     }
