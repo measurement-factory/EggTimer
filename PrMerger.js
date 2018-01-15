@@ -57,16 +57,8 @@ class PrMerger {
         if (!context)
             return false;
         this.total = 1;
-        try {
-            const finished = await context.finishProcessing();
-            return !finished;
-        } catch (e) {
-            this.errors++;
-            if (context.ffMergeFailed)
-                return false;
-            Log.logError(e, "resumeCurrent");
-            throw e;
-        }
+        const finished = await context.finishProcessing();
+        return !finished;
     }
 
     // Loads 'being-in-merge' PR, if exists (the PR has tag and staging_branch points to the tag).

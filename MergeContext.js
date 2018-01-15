@@ -15,7 +15,6 @@ class MergeContext {
 
     constructor(pr, tSha) {
         // true when fast-forwarding master into staging_branch fails
-        this.ffMergeFailed = false;
         this._pr = pr;
         this.tagSha = (tSha === undefined) ? null : tSha;
         this._shaLimit = 6;
@@ -87,7 +86,8 @@ class MergeContext {
         }
 
         assert(compareStatus === "ahead");
-        await this._finishMerging();
+        if (!(await this._finishMerging()))
+            return true;
         return await this._cleanupMerged();
     }
 
@@ -216,16 +216,19 @@ class MergeContext {
     }
 
     // fast-forwards base into staging_branch
+    // returns 'true' on success, 'false' on failure,
+    // throws on unexpected error
     async _finishMerging() {
         assert(this.tagSha);
         this._log("finish merging...");
         try {
             await GH.updateReference(this.prBaseBranchPath(), this.tagSha, false);
+            return true;
         } catch (e) {
             if (e.name === 'ErrorContext' && e.unprocessable()) {
                 this._log("fast-forwarding failed");
-                this.ffMergeFailed = true;
                 await this._cleanupMergeFailed();
+                return false;
             }
             throw e;
         }
