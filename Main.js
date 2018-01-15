@@ -1,22 +1,11 @@
-const http = require('http');
 const createHandler = require('github-webhook-handler');
 const Config = require('./Config.js');
-const Util = require('./Util.js');
 const Log = require('./Logger.js');
 const Merger = require('./RepoMerger.js');
 
 const Logger = Log.Logger;
 
 const WebhookHandler = createHandler({ path: Config.githubWebhookPath(), secret: Config.githubWebhookSecret() });
-
-const server = http.createServer((req, res) => {
-    WebhookHandler(req, res, () => {
-        res.statusCode = 404;
-        res.end('no such location');
-    });
-});
-
-Util.StartServer(server, Merger.run.bind(Merger, server));
 
 // events
 
@@ -51,3 +40,6 @@ WebhookHandler.on('push', (ev) => {
     Logger.info("push event:", e.ref);
     Merger.run();
 });
+
+Merger.run(WebhookHandler);
+

@@ -1,8 +1,9 @@
 const assert = require('assert');
+const http = require('http');
 const Config = require('./Config.js');
 const Log = require('./Logger.js');
-const PrMerger = require('./PrMerger.js');
 const Util = require('./Util.js');
+const PrMerger = require('./PrMerger.js');
 
 const Logger = Log.Logger;
 
@@ -12,39 +13,67 @@ class RepoMerger {
         this._timer = null;
         this._fireDate = null;
         this._rerun = false;
-        this.running = false;
+        this._running = false;
+        this._handler = null;
         this._server = null;
     }
 
-    // prNum (if provided) corresponds to a PR, scheduled this 'run'
-    async run(server) {
-        if (server) {
-            this._server = server;
-            Log.Logger.info("Listening on " + Config.port() + " ...");
-        }
+    _createServer() {
+        assert(!this._server);
 
-        if (this.running) {
+        this._server = http.createServer((req, res) => {
+            assert(this._handler);
+            this._handler(req, res, () => {
+                res.statusCode = 404;
+                res.end('no such location');
+            });
+        });
+
+        this._server.on('error', (e) => {
+                Logger.error("HTTP server error: " + e.code);
+            }
+        );
+
+        return new Promise((resolve) => {
+            const params = {port: Config.port()};
+            if (Config.host())
+                params.host = Config.host();
+            this._server.listen(params, () => {
+                Log.Logger.info("HTTP server started and listening on " + Config.port() + " ...");
+                resolve(true);
+            });
+        });
+    }
+
+    // prNum (if provided) corresponds to a PR, scheduled this 'run'
+    async run(handler) {
+        if (handler)
+            this._handler = handler;
+
+        if (this._running) {
             Logger.info("Already running, planning rerun.");
             this._rerun = true;
             return;
         }
+        this._running = true;
 
-        this.running = true;
         do {
             let step = null;
             try {
                 this._rerun = false;
-                this.unplan();
+                this._unplan();
+                if (!this._server)
+                    await this._createServer();
                 step = new PrMerger();
                 await step.runStep();
                 if (!this._rerun && step.rerunIn !== null)
-                    this.plan(step.rerunIn);
+                    this._plan(step.rerunIn);
             } catch (e) {
                 Log.logError(e, "RepoMerger.run");
                 this._rerun = true;
 
                 Logger.info("closing HTTP server");
-                this._server.close(this.onServerClosed.bind(this));
+                this._server.close(this._onServerClosed.bind(this));
 
                 const period = 10; // 10 min
                 Logger.info("next re-try in " + period + " minutes.");
@@ -54,20 +83,16 @@ class RepoMerger {
                     step.logStatistics();
             }
         } while (this._rerun);
-        this.running = false;
+        this._running = false;
     }
 
-    onServerClosed() {
-        Logger.info("re-starting HTTP server...");
-        Util.StartServer(this._server, this.onServerRestarted.bind(this));
+    _onServerClosed() {
+        Logger.info("HTTP server closed.");
+        this._server = null;
     }
 
-    onServerRestarted() {
-        Log.Logger.info("restarted and listening on " + Config.port() + " ...");
-    }
-
-    plan(ms) {
-        assert(!this.planned());
+    _plan(ms) {
+        assert(!this._planned());
         assert(ms >= 0);
         if (ms === 0) {
             this._rerun = true;
@@ -79,14 +104,14 @@ class RepoMerger {
         Logger.info("planning rerun in " + this._msToTime(ms));
     }
 
-    unplan() {
-        if (this.planned()) {
+    _unplan() {
+        if (this._planned()) {
             clearTimeout(this._timer);
             this._timer = null;
         }
     }
 
-    planned() { return this._timer !== null; }
+    _planned() { return this._timer !== null; }
 
     // duration in ms
     _msToTime(duration) {
