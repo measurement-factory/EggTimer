@@ -242,7 +242,6 @@ class MergeContext {
         this._log("merged, cleanup...");
         await this._labelMerged();
         await GH.updatePR(this.number(), 'closed');
-        assert(0);
         await GH.deleteReference(this.mergingTag());
         return true;
     }
