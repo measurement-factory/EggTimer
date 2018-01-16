@@ -29,7 +29,8 @@ class PrMerger {
 
         while (prList.length) {
             try {
-                let context = new MergeContext(prList.shift());
+                const pr = prList.shift();
+                let context = new MergeContext(pr);
                 this.total++;
                 if (await context.startProcessing())
                     return true;
@@ -38,7 +39,9 @@ class PrMerger {
                     this.rerunIn = context.delay();
             } catch (e) {
                 this.errors++;
-                if (!prList.length)
+                if (prList.length)
+                    Log.logError(e, "PrMerger.runStep");
+                else
                     throw e;
             }
         }
@@ -62,42 +65,27 @@ class PrMerger {
 
     // Loads 'being-in-merge' PR, if exists (the PR has tag and staging_branch points to the tag).
     async _current() {
-        Logger.info("current running");
+        Logger.info("Looking for current PR...");
         const stagingSha = await GH.getReference(Config.stagingBranch());
-        let tags = null;
         // request all repository tags
-        tags = await GH.getTags();
-        if (!tags.length) {
-            Logger.info("No tags found");
-            return null;
-        }
-
+        let tags = await GH.getTags();
         // search for a tag, the staging_branch points to,
         // and parse out PR number from the tag name
-        let prNum = null;
-        let tagName = null;
-        for (let tag of tags) {
-            if (tag.object.sha === stagingSha) {
-                const matched = tag.ref.match(Util.TagRegex);
-                if (matched) {
-                    prNum = matched[3];
-                    tagName = matched[2] + matched[3];
-                    break;
-                }
-            }
-        }
-
-        if (prNum === null) {
-            Logger.info("No merging PR found.");
+        const tag = tags.find((t) => { return (t.object.sha === stagingSha) && Util.MatchTag(t.ref); });
+        if (tag === undefined) {
+            Logger.info("No current PR found.");
             return null;
         }
-        assert(tagName === Util.MergingTag(prNum));
 
-        let stagingPr = await GH.getPR(prNum, false);
+        const parsed = Util.ParseTag(tag.ref);
+        Logger.info("Current PR is " + parsed.prNum);
+        assert(parsed.tagName === Util.MergingTag(parsed.prNum));
+
+        let stagingPr = await GH.getPR(parsed.prNum, false);
         if (stagingPr.state !== 'open') {
-            Logger.error("PR" + prNum + " was unexpectedly closed");
+            Logger.error("PR" + parsed.prNum + " was unexpectedly closed");
             if (!Config.dryRun())
-                await GH.deleteReference(tagName);
+                await GH.deleteReference(parsed.tagName);
             return null;
         }
 

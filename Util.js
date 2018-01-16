@@ -15,6 +15,20 @@ function commonParams() {
 
 const TagRegex = /(refs\/)(tags\/.*-PR)(\d+)$/;
 
+function MatchTag(ref) {
+    return ref.match(TagRegex) !== null;
+}
+
+function ParseTag(ref) {
+    const matched = ref.match(TagRegex);
+    if (!matched)
+        return null;
+    let result = {};
+    result.prNum = matched[3];
+    result.tagName = matched[2] + matched[3];
+    return result;
+}
+
 function MergingTag(prNum) {
     assert(prNum);
     return "tags/T-merging-PR" + prNum;
@@ -64,8 +78,9 @@ class ErrorContext extends Error {
 module.exports = {
     sleep: sleep,
     commonParams: commonParams,
-    TagRegex: TagRegex,
     MergingTag: MergingTag,
+    MatchTag: MatchTag,
+    ParseTag: ParseTag,
     ErrorContext: ErrorContext
 };
 
