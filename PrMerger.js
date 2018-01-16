@@ -12,8 +12,7 @@ class PrMerger {
     constructor() {
         this.total = 0;
         this.errors = 0;
-        // the number of milliseconds to be re-run in,
-        // zero means re-run immediately
+        // the number of milliseconds to be re-run in
         this.rerunIn = null;
     }
 

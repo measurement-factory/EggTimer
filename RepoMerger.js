@@ -56,23 +56,23 @@ class RepoMerger {
             this._rerun = true;
             return;
         }
+        this._unplan();
         this._running = true;
-
+        let rerunIn = null;
         do {
-            let step = null;
+            let prMerger = null;
             try {
                 this._rerun = false;
-                this._unplan();
+                rerunIn = null;
                 if (!this._server)
                     await this._createServer();
-                step = new PrMerger();
-                await step.runStep();
-                if (!this._rerun && step.rerunIn !== null)
-                    this._plan(step.rerunIn);
+                prMerger = new PrMerger();
+                await prMerger.runStep();
+                if (prMerger.rerunIn !== null)
+                    rerunIn = prMerger.rerunIn;
             } catch (e) {
                 Log.logError(e, "RepoMerger.run");
                 this._rerun = true;
-
                 Logger.info("closing HTTP server");
                 this._server.close(this._onServerClosed.bind(this));
 
@@ -80,10 +80,12 @@ class RepoMerger {
                 Logger.info("next re-try in " + period + " minutes.");
                 await Util.sleep(period * 60 * 1000); // 10 min
             } finally {
-                if (step)
-                    step.logStatistics();
+                if (prMerger)
+                    prMerger.logStatistics();
             }
         } while (this._rerun);
+        if (rerunIn)
+            this._plan(rerunIn);
         this._running = false;
     }
 
@@ -93,12 +95,8 @@ class RepoMerger {
     }
 
     _plan(ms) {
-        assert(!this._planned());
-        assert(ms >= 0);
-        if (ms === 0) {
-            this._rerun = true;
-            return;
-        }
+        assert(ms > 0);
+        assert(this._timer === null);
         let date = new Date();
         date.setSeconds(date.getSeconds() + ms/1000);
         this._timer = setTimeout(this.run.bind(this), ms);
@@ -106,13 +104,11 @@ class RepoMerger {
     }
 
     _unplan() {
-        if (this._planned()) {
+        if (this._timer !== null) {
             clearTimeout(this._timer);
             this._timer = null;
         }
     }
-
-    _planned() { return this._timer !== null; }
 
     // duration in ms
     _msToTime(duration) {
