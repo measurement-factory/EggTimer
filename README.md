@@ -33,10 +33,10 @@ are satisfied:
 * All the _required_ checks have succeeded on the (possibly stale)
   PR branch.
   GitHub says "All checks have passed" next to a green check mark:
-  ![](https://help.github.com/assets/images/help/repository/req-status-check-all-passed.png)
+  ![](./docs/images/all_passed.png)
   If an optional check has failed, but all required ones have passed,
   GitHub will show "Some checks were not successful" message:
-  ![](https://help.github.com/assets/images/help/repository/req-status-check-admin-merge.png)
+  ![](./docs/images/required_passed.png)
 * The PR is approved for merging (see below for voting rules).
 * The PR has a valid PR title and PR description (see below about
   writing PR descriptions).
@@ -200,18 +200,18 @@ click the "Add webhook" button.
 The bot loads its configuration from `./config.json`. You may use
 `config-example.json` to bootstrap your configuration.
 
-All configuration fields are required (XXX: Why is there a "default" column in the table below then? Rename "default" to example and adjust accordingly?).
+All configuration fields are required.
 
-*Field* | *Description* | *default*
+*Field* | *Description* | *example*
 --- | --- | ---
-*github_username* | The bot uses this GitHub user account for all GitHub communications, including target branch updates. This user needs to have write access to the repository.| -
-*github_token* | An authentication token generated for the associated `config::github_username`. | -
-*github_webhook_path* | GitHub webhook URL path. | -
-*github_webhook_secret* | A random secret string to be used here and in the GitHub webhook configuration. | -
-*host* | The bot listens for GitHub requests on this IP address. If omitted, the bot will listen on all available IP interfaces. | -
+*github_username* | The bot uses this GitHub user account for all GitHub communications, including target branch updates. This user needs to have write access to the repository.| "github_bot_username"
+*github_token* | An authentication token generated for the associated `config::github_bot_username`. | "quai5lieviegoh7na7eej3wuu5quahju8jah1di0"
+*github_webhook_path* | GitHub webhook URL path. | "/egg-timer"
+*github_webhook_secret* | A random secret string to be used here and in the GitHub webhook configuration. | "maupoos1lirae9pein0chi3ohzikoideing4eesh"
+*host* | The bot listens for GitHub requests on this IP address. If omitted, the bot will listen on all available IP interfaces. | 127.0.0.1
 *port* | The bot listens for GitHub requests on this TCP port. | 7777
-*repo* | The name of the GitHub repository that the bot should serve. | -
-*owner* | The owner (a person or organization) of the GitHub repository. | -
+*repo* | The name of the GitHub repository that the bot should serve. | "squid"
+*owner* | The owner (a person or organization) of the GitHub repository. | "squid-cache"
 *dry_run*| A boolean option to enable read-only, no-modifications mode where the bot logs pull requests selected for merging but skips further merging steps.| false
 *skip_merge*| A boolean option to enable no-final-modifications mode where the bot performs all the merging steps up to (and not including) the target branch update. Eligible PRs are merged into and tested on the staging branch but are never merged into their target branches. | false
 *staging_branch* | The name of the staging branch. | auto
@@ -235,12 +235,9 @@ manual PR merging, of course.
 ### GitHub does not know that a PR was merged
 
 GitHub does not recognize auto-merged PRs as merged -- it shows the
-following message instead of the purple "Merged" icon (TODO: start this
-paragraph with that icon image):
+following message instead of the purple "Merged" icon:
 
-```
-This pull request is closed, but the ... branch has unmerged commits.
-```
+![](./docs/images/closed_unmerged.png)
 
 Even with a single-commit PR, the merged commit has a different commit
 message (and often different code!) than the PR branch commit. When
