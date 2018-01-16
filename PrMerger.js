@@ -40,7 +40,7 @@ class PrMerger {
             } catch (e) {
                 this.errors++;
                 if (prList.length)
-                    Log.logError(e, "PrMerger.runStep");
+                    Log.LogError(e, "PrMerger.runStep");
                 else
                     throw e;
             }

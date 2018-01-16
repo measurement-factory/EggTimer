@@ -71,7 +71,7 @@ class RepoMerger {
                 if (prMerger.rerunIn !== null)
                     rerunIn = prMerger.rerunIn;
             } catch (e) {
-                Log.logError(e, "RepoMerger.run");
+                Log.LogError(e, "RepoMerger.run");
                 this._rerun = true;
                 Logger.info("closing HTTP server");
                 this._server.close(this._onServerClosed.bind(this));

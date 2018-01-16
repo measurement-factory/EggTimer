@@ -15,7 +15,7 @@ Logger = bunyan.createLogger({
     });
 Logger.addStream({name: "eggtimer-out", stream: process.stdout});
 
-function logError(err, context) {
+function LogError(err, context) {
     assert(context);
     let msg = (err.message === undefined) ? JSON.stringify(err) : err.message;
     msg = context + ": " + msg;
@@ -30,7 +30,7 @@ function logApiResult(method, params, result) {
 
 module.exports = {
     Logger: Logger,
-    logError: logError,
+    LogError: LogError,
     logApiResult: logApiResult
 };
 

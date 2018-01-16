@@ -16,20 +16,20 @@ class MergeContext {
     constructor(pr, tSha) {
         // true when fast-forwarding master into staging_branch fails
         this._pr = pr;
-        this.tagSha = (tSha === undefined) ? null : tSha;
+        this._tagSha = (tSha === undefined) ? null : tSha;
         this._shaLimit = 6;
         // gets a value only if ready/ready_and_delayed
-        this._approvalDelay = null;
+        this._votingDelay = null;
     }
 
-    // Returns 'true' if the PR passed all checks and merging started,
-    // 'false' when the PR was skipped due to some failed checks.
+    // Returns 'true' if all PR checks passed successfully and merging
+    // started,'false' if we can't start the PR due to some failed checks.
     async startProcessing() {
         if (!(await this._checkMergeConditions("checking merge preconditions...")))
             return false;
 
-        // ready but in approval period
-        if (this._approvalDelay > 0)
+        // 'slow burner' case
+        if (this._votingDelay > 0)
             return false;
 
         if (Config.dryRun()) {
@@ -46,14 +46,11 @@ class MergeContext {
     // 'false' if the PR is still in-process (delayed for some reason).
     async finishProcessing() {
 
-        const commitStatus = await this._checkStatuses(this.tagSha);
+        const commitStatus = await this._checkStatuses(this._tagSha);
         if (commitStatus === 'pending') {
             Logger.info("waiting for more staging checks completing");
             return false;
-        } else if (commitStatus === 'success') {
-            Logger.info("staging checks succeeded");
-        } else {
-            assert(commitStatus === 'failure');
+        } else if (commitStatus === 'failure') {
             Logger.info("staging checks failed");
             if (Config.dryRun()) {
                 this._warnDryRun("finish merging");
@@ -62,6 +59,9 @@ class MergeContext {
             await this._cleanupMergeFailed();
             return true;
         }
+
+        assert(commitStatus === 'success');
+        Logger.info("staging checks succeeded");
 
         if (Config.dryRun()) {
             this._warnDryRun("finish merging");
@@ -74,13 +74,15 @@ class MergeContext {
             return false;
         }
 
-        const compareStatus = await GH.compareCommits(this.prBaseBranch(), this.mergingTag());
+        const compareStatus = await GH.compareCommits(this._prBaseBranch(), this._mergingTag());
 
+        // already merged
         if (compareStatus === "identical" || compareStatus === "behind")
             return await this._cleanupMerged();
 
-        if (await this._needRestart()) {
-            // compareStatus can be "diverged" here, if the base changed
+        // note that _needRestart() would notice that the tag is "diverged",
+        // but we check compareStatus first to avoid useless api requests
+        if (compareStatus === "diverged" || await this._needRestart()) {
             await this._cleanupMergeFailed();
             return true;
         }
@@ -94,10 +96,10 @@ class MergeContext {
     // Tries to load 'merge tag' for the PR.
     async _loadTag() {
        try {
-           this.tagSha = await GH.getReference(this.mergingTag());
+           this._tagSha = await GH.getReference(this._mergingTag());
        } catch (e) {
            if (e.name === 'ErrorContext' && e.notFound())
-               this._log(this.mergingTag() + " not found");
+               this._log(this._mergingTag() + " not found");
            else
                throw e;
        }
@@ -106,13 +108,13 @@ class MergeContext {
     // Check 'merge tag' state as merge condition.
     // Returns 'true' if the tag does not exist or the caller (i.e., preconditions
     // verifier) should ignore this tag;
-    // 'false': the non-stale tag exists and it's status is 'failure'.
+    // 'false' if the non-stale tag exists and it's status is 'failure'.
     async _ignoreTag() {
         await this._loadTag();
-        if (!this.tagSha)
+        if (!this._tagSha)
             return true;
 
-        const commitStatus = await this._checkStatuses(this.tagSha);
+        const commitStatus = await this._checkStatuses(this._tagSha);
         if (commitStatus !== 'failure')
             return true;
 
@@ -121,8 +123,8 @@ class MergeContext {
             let msg = "will not re-try: merge commit has not changed since last failed staging checks";
             // the base branch could be changed but resulting with new conflicts,
             // merge commit is not updated then
-            if (this.prMergeable() !== true)
-                msg += " due to conflicts with " + this.prBaseBranch();
+            if (this._prMergeable() !== true)
+                msg += " due to conflicts with " + this._prBaseBranch();
             this._log(msg);
             if (!Config.dryRun())
                 await this._labelStagingFailed();
@@ -130,15 +132,15 @@ class MergeContext {
         } else {
             this._log("will re-try: merge commit has changed since last failed staging checks");
             if (!Config.dryRun())
-                await GH.deleteReference(this.mergingTag());
+                await GH.deleteReference(this._mergingTag());
             return true;
         }
     }
 
     // whether the tag and GitHub-generated PR 'merge commit' are equal
     async _tagIsFresh() {
-        const tagCommit = await GH.getCommit(this.tagSha);
-        const prMergeSha = await GH.getReference(this.mergePath());
+        const tagCommit = await GH.getCommit(this._tagSha);
+        const prMergeSha = await GH.getReference(this._mergePath());
         const prCommit = await GH.getCommit(prMergeSha);
         return tagCommit.treeSha === prCommit.treeSha;
     }
@@ -158,17 +160,17 @@ class MergeContext {
     async _checkMergeConditions(desc) {
         this._log(desc);
 
-        const pr = await GH.getPR(this.number(), true);
+        const pr = await GH.getPR(this._number(), true);
         // refresh PR data
         assert(pr.number === this._pr.number);
         this._pr = pr;
 
-        if (!this.prOpen()) {
+        if (!this._prOpen()) {
             this._log("unexpectedly closed");
             return false;
         }
 
-        const messageValid = this.prMessageValid();
+        const messageValid = this._prMessageValid();
         if (!Config.dryRun())
             await this._labelCheckMessage(messageValid);
         if (!messageValid) {
@@ -176,18 +178,18 @@ class MergeContext {
             return false;
         }
 
-        if (!this.prMergeable()) {
+        if (!this._prMergeable()) {
             this._log("not mergeable yet.");
             return false;
         }
 
-        const commitStatus = await this._checkStatuses(this.prHeadSha());
+        const commitStatus = await this._checkStatuses(this._prHeadSha());
         if (commitStatus !== 'success') {
             this._log("commit status is " + commitStatus);
             return false;
         }
 
-        if (await this.hasLabel(Config.mergedLabel(), this.number())) {
+        if (await this._hasLabel(Config.mergedLabel(), this._number())) {
             this._log("already merged");
             return false;
         }
@@ -200,29 +202,29 @@ class MergeContext {
         if (!(await this._ignoreTag()))
             return false;
 
-        this._approvalDelay = delay;
+        this._votingDelay = delay;
         return true;
     }
 
     // Creates a 'merge commit' and adjusts staging_branch.
     async _startMerging() {
         this._log("start merging...");
-        const baseSha = await GH.getReference(this.prBaseBranchPath());
-        const mergeSha = await GH.getReference("pull/" + this.number() + "/merge");
+        const baseSha = await GH.getReference(this._prBaseBranchPath());
+        const mergeSha = await GH.getReference("pull/" + this._number() + "/merge");
         const mergeCommit = await GH.getCommit(mergeSha);
-        const tempCommitSha = await GH.createCommit(mergeCommit.treeSha, this.prMessage(), [baseSha]);
-        this.tagSha = await GH.createReference(tempCommitSha, "refs/" + this.mergingTag());
-        await GH.updateReference(Config.stagingBranch(), this.tagSha, true);
+        const tempCommitSha = await GH.createCommit(mergeCommit.treeSha, this._prMessage(), [baseSha]);
+        this._tagSha = await GH.createReference(tempCommitSha, "refs/" + this._mergingTag());
+        await GH.updateReference(Config.stagingBranch(), this._tagSha, true);
     }
 
     // fast-forwards base into staging_branch
     // returns 'true' on success, 'false' on failure,
     // throws on unexpected error
     async _finishMerging() {
-        assert(this.tagSha);
+        assert(this._tagSha);
         this._log("finish merging...");
         try {
-            await GH.updateReference(this.prBaseBranchPath(), this.tagSha, false);
+            await GH.updateReference(this._prBaseBranchPath(), this._tagSha, false);
             return true;
         } catch (e) {
             if (e.name === 'ErrorContext' && e.unprocessable()) {
@@ -244,8 +246,8 @@ class MergeContext {
         }
         this._log("merged, cleanup...");
         await this._labelMerged();
-        await GH.updatePR(this.number(), 'closed');
-        await GH.deleteReference(this.mergingTag());
+        await GH.updatePR(this._number(), 'closed');
+        await GH.deleteReference(this._mergingTag());
         return true;
     }
 
@@ -257,7 +259,7 @@ class MergeContext {
         }
         this._log("merge failed, cleanup...");
         await this._labelMergeFailed();
-        await GH.deleteReference(this.mergingTag());
+        await GH.deleteReference(this._mergingTag());
     }
 
     // If approved, returns the number for milliseconds to wait for,
@@ -265,7 +267,7 @@ class MergeContext {
     async _checkApproved() {
         const collaborators = await GH.getCollaborators();
         const pushCollaborators = collaborators.filter(c => c.permissions.push === true);
-        const requestedReviewers = this.prRequestedReviewers();
+        const requestedReviewers = this._prRequestedReviewers();
 
         for (let collaborator of pushCollaborators) {
             if (requestedReviewers.includes(collaborator.login)) {
@@ -274,9 +276,9 @@ class MergeContext {
             }
         }
 
-        let reviews = await GH.getReviews(this.number());
+        let reviews = await GH.getReviews(this._number());
 
-        const prAgeMs = new Date() - new Date(this.createdAt());
+        const prAgeMs = new Date() - new Date(this._createdAt());
         const votingDelayMinMs = Config.votingDelayMin() * MsPerHour;
         if (prAgeMs < votingDelayMinMs) {
             this._log("in minimal voting period");
@@ -287,8 +289,8 @@ class MergeContext {
         // where 'reviewer' is a core developer, 'date' the review date and 'status' is either
         // 'approved' or 'changes_requested'.
         let usersVoted = [];
-        if (pushCollaborators.find(el => el.login === this.prAuthor()))
-            usersVoted.push({reviewer: this.prAuthor(), date: this.createdAt(), state: 'approved'});
+        if (pushCollaborators.find(el => el.login === this._prAuthor()))
+            usersVoted.push({reviewer: this._prAuthor(), date: this._createdAt(), state: 'approved'});
 
         // Reviews are returned in chronological order; the list may contain several
         // reviews from the same reviewer, so the actual 'state' is the most recent one.
@@ -341,13 +343,13 @@ class MergeContext {
     // 'error' otherwise
     async _checkStatuses(ref) {
 
-        const requiredContexts = await GH.getProtectedBranchRequiredStatusChecks(this.prBaseBranch());
+        const requiredContexts = await GH.getProtectedBranchRequiredStatusChecks(this._prBaseBranch());
         // https://developer.github.com/v3/repos/statuses/#get-the-combined-status-for-a-specific-ref
         // state is one of 'failure', 'error', 'pending' or 'success'.
         // We treat both 'failure' and 'error' as an 'error'.
         let combinedStatus = await GH.getStatuses(ref);
         if (requiredContexts.length === 0) {
-            this.logError("no required contexts found");
+            this._logError("no required contexts found");
             // rely on all available checks then
             return combinedStatus.state;
         }
@@ -370,14 +372,14 @@ class MergeContext {
 
     // Label manipulation methods
 
-    async hasLabel(label) {
-        const labels = await GH.getLabels(this.number());
+    async _hasLabel(label) {
+        const labels = await GH.getLabels(this._number());
         return labels.find(lbl => lbl.name === label) !== undefined;
     }
 
-    async removeLabel(label) {
+    async _removeLabel(label) {
         try {
-            await GH.removeLabel(label, this.number());
+            await GH.removeLabel(label, this._number());
         } catch (e) {
             if (e.name === 'ErrorContext' && e.notFound()) {
                 this._log("removeLabel: " + label + " not found");
@@ -387,9 +389,9 @@ class MergeContext {
         }
     }
 
-    async addLabel(label) {
+    async _addLabel(label) {
         let params = commonParams();
-        params.number = this.number();
+        params.number = this._number();
         params.labels = [];
         params.labels.push(label);
         try {
@@ -408,60 +410,60 @@ class MergeContext {
     async _labelCheckMessage(isValid) {
         const label = Config.invalidMessageLabel();
         if (isValid)
-            await this.removeLabel(label);
+            await this._removeLabel(label);
         else
-            await this.addLabel(label);
+            await this._addLabel(label);
     }
 
     async _labelMerging() {
-        await this.removeLabel(Config.mergeReadyLabel());
-        await this.removeLabel(Config.mergeFailedLabel());
-        await this.removeLabel(Config.stagingChecksFailedLabel());
-        await this.addLabel(Config.mergingLabel());
+        await this._removeLabel(Config.mergeReadyLabel());
+        await this._removeLabel(Config.mergeFailedLabel());
+        await this._removeLabel(Config.stagingChecksFailedLabel());
+        await this._addLabel(Config.mergingLabel());
     }
 
     async _labelMerged() {
-        await this.removeLabel(Config.mergingLabel());
-        await this.removeLabel(Config.mergeReadyLabel());
-        await this.removeLabel(Config.mergeFailedLabel());
-        await this.removeLabel(Config.stagingChecksFailedLabel());
-        await this.addLabel(Config.mergedLabel());
+        await this._removeLabel(Config.mergingLabel());
+        await this._removeLabel(Config.mergeReadyLabel());
+        await this._removeLabel(Config.mergeFailedLabel());
+        await this._removeLabel(Config.stagingChecksFailedLabel());
+        await this._addLabel(Config.mergedLabel());
     }
 
     async _labelMergeFailed() {
-        await this.removeLabel(Config.mergingLabel());
-        await this.removeLabel(Config.mergeReadyLabel());
-        await this.addLabel(Config.mergeFailedLabel());
+        await this._removeLabel(Config.mergingLabel());
+        await this._removeLabel(Config.mergeReadyLabel());
+        await this._addLabel(Config.mergeFailedLabel());
     }
 
     async _labelStagingFailed() {
-        await this.removeLabel(Config.mergingLabel());
-        await this.addLabel(Config.stagingChecksFailedLabel());
+        await this._removeLabel(Config.mergingLabel());
+        await this._addLabel(Config.stagingChecksFailedLabel());
     }
 
     async _labelMergeReady() {
-        await this.removeLabel(Config.mergingLabel());
-        await this.removeLabel(Config.stagingChecksFailedLabel());
-        await this.addLabel(Config.mergeReadyLabel());
+        await this._removeLabel(Config.mergingLabel());
+        await this._removeLabel(Config.stagingChecksFailedLabel());
+        await this._addLabel(Config.mergeReadyLabel());
     }
 
     // Getters
 
-    // the remainder of the approval period(in ms)
-    // or 'null'(not in approval period)
-    delay() { return this._approvalDelay; }
+    // the remainder of the max voting delay (in ms)
+    // or 'null', meaning no approvals yet
+    delay() { return this._votingDelay; }
 
-    number() { return this._pr.number; }
+    _number() { return this._pr.number; }
 
-    prHeadSha() { return this._pr.head.sha; }
+    _prHeadSha() { return this._pr.head.sha; }
 
-    prMessage() {
+    _prMessage() {
         return this._pr.title + endOfLine + this._pr.body + endOfLine +
             "(PR #" + this._pr.number + ")";
     }
 
-    prMessageValid() {
-        const lines = this.prMessage().split('\n');
+    _prMessageValid() {
+        const lines = this._prMessage().split('\n');
         for (let line of lines) {
             if (line.length > 72)
                 return false;
@@ -469,7 +471,7 @@ class MergeContext {
         return true;
     }
 
-    prRequestedReviewers() {
+    _prRequestedReviewers() {
         let reviewers = [];
         if (this._pr.requested_reviewers) {
             for (let r of this._pr.requested_reviewers)
@@ -478,21 +480,21 @@ class MergeContext {
         return reviewers;
     }
 
-    prAuthor() { return this._pr.user.login; }
+    _prAuthor() { return this._pr.user.login; }
 
-    prMergeable() { return this._pr.mergeable; }
+    _prMergeable() { return this._pr.mergeable; }
 
-    prBaseBranch() { return this._pr.base.ref; }
+    _prBaseBranch() { return this._pr.base.ref; }
 
-    prBaseBranchPath() { return "heads/" + this.prBaseBranch(); }
+    _prBaseBranchPath() { return "heads/" + this.prBaseBranch(); }
 
-    prOpen() { return this._pr.state === 'open'; }
+    _prOpen() { return this._pr.state === 'open'; }
 
-    mergingTag() { return Util.MergingTag(this._pr.number); }
+    _mergingTag() { return Util.MergingTag(this._pr.number); }
 
-    createdAt() { return this._pr.created_at; }
+    _createdAt() { return this._pr.created_at; }
 
-    mergePath() { return "pull/" + this._pr.number + "/merge"; }
+    _mergePath() { return "pull/" + this._pr.number + "/merge"; }
 
     _log(msg) {
         Logger.info("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
@@ -503,16 +505,16 @@ class MergeContext {
         this._log("skip " + msg + " due to " + option + " option");
     }
 
-    logError(err, context) {
+    _logError(err, context) {
         assert(context);
-        let msg = this.toString() + " " + context;
-        Log.logError(err, msg);
+        let msg = this._toString() + " " + context;
+        Log.LogError(err, msg);
     }
 
-    toString() {
+    _toString() {
         let str = "PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit);
-        if (this.tagSha !== null)
-            str += ", tag: " + this.tagSha.substr(0, this._shaLimit);
+        if (this._tagSha !== null)
+            str += ", tag: " + this._tagSha.substr(0, this._shaLimit);
         return str + ")";
     }
 } // MergeContext
