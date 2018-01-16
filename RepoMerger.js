@@ -39,7 +39,8 @@ class RepoMerger {
             if (Config.host())
                 params.host = Config.host();
             this._server.listen(params, () => {
-                Log.Logger.info("HTTP server started and listening on " + Config.port() + " ...");
+                let hostStr = Config.host() ? Config.host() : "unspecified";
+                Log.Logger.info("HTTP server started and listening on " + hostStr + ":" + Config.port());
                 resolve(true);
             });
         });

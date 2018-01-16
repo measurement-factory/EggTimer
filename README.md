@@ -209,7 +209,7 @@ All configuration fields are required.
 *github_token* | An authentication token generated for the associated `config::github_bot_username`. | "quai5lieviegoh7na7eej3wuu5quahju8jah1di0"
 *github_webhook_path* | GitHub webhook URL path. | "/egg-timer"
 *github_webhook_secret* | A random secret string to be used here and in the GitHub webhook configuration. | "maupoos1lirae9pein0chi3ohzikoideing4eesh"
-*host* | The bot listens for GitHub requests on this IP address. If omitted, the bot will listen on all available IP interfaces. | 127.0.0.1
+*host* | The bot listens for GitHub requests on this IP address. If empty string, the bot will listen on all available IP interfaces. | ""
 *port* | The bot listens for GitHub requests on this TCP port. | 7777
 *repo* | The name of the GitHub repository that the bot should serve. | "squid"
 *owner* | The owner (a person or organization) of the GitHub repository. | "squid-cache"

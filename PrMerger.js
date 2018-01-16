@@ -51,7 +51,7 @@ class PrMerger {
     // not start the next one):
     // 'true': current PR was found and its processing not yet finished.
     // 'false': the PR was found and it's processing was finished (succeeded
-    //  or failed due to an error).
+    // or failed due to an error).
     async resumeCurrent() {
         const context = await this._current();
         if (!context)
