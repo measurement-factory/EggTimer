@@ -285,8 +285,8 @@ class MergeContext {
             return votingDelayMinMs - prAgeMs;
         }
 
-        // An array of [{reviewer, date, status}] elements,
-        // where 'reviewer' is a core developer, 'date' the review date and 'status' is either
+        // An array of [{reviewer, date, state}] elements,
+        // where 'reviewer' is a core developer, 'date' the review date and 'state' is either
         // 'approved' or 'changes_requested'.
         let usersVoted = [];
         if (pushCollaborators.find(el => el.login === this._prAuthor()))
@@ -486,7 +486,7 @@ class MergeContext {
 
     _prBaseBranch() { return this._pr.base.ref; }
 
-    _prBaseBranchPath() { return "heads/" + this.prBaseBranch(); }
+    _prBaseBranchPath() { return "heads/" + this._prBaseBranch(); }
 
     _prOpen() { return this._pr.state === 'open'; }
 
