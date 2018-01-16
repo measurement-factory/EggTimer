@@ -31,10 +31,11 @@ are satisfied:
   "This branch has no conflicts with the base branch" message next
   to a green check mark.
 * All the _required_ checks have succeeded on the (possibly stale)
-  PR branch.
-  GitHub says "All checks have passed" next to a green check mark:
+  PR branch:
+   * If _all_ checks have succeeded, GitHub says "All checks have passed"
+     next to a green check mark:
   ![](./docs/images/all_passed.png)
-  If an optional check has failed, but all required ones have passed,
+   * If an _optional_ check has failed, but all _required_ ones have passed,
   GitHub will show "Some checks were not successful" message:
   ![](./docs/images/required_passed.png)
 * The PR is approved for merging (see below for voting rules).
