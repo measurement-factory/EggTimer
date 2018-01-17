@@ -23,10 +23,7 @@ function ParseTag(ref) {
     const matched = ref.match(TagRegex);
     if (!matched)
         return null;
-    let result = {};
-    result.prNum = matched[3];
-    result.tagName = matched[2] + matched[3];
-    return result;
+    return matched[3];
 }
 
 function MergingTag(prNum) {

@@ -46,6 +46,16 @@ class MergeContext {
     // 'false' if the PR is still in-process (delayed for some reason).
     async finishProcessing() {
 
+        if (!this._prOpen()) {
+            this._logError("was unexpectedly closed");
+            if (Config.dryRun()) {
+                this._warnDryRun("finish merging");
+                return false;
+            }
+            await this._cleanupMergeFailed();
+            return true;
+        }
+
         const commitStatus = await this._checkStatuses(this._tagSha);
         if (commitStatus === 'pending') {
             Logger.info("waiting for more staging checks completing");

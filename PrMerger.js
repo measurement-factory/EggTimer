@@ -12,7 +12,8 @@ class PrMerger {
     constructor() {
         this.total = 0;
         this.errors = 0;
-        // the number of milliseconds to be re-run in
+        // stores the the number of milliseconds to be re-run
+        // for the oldest 'slow burner'
         this.rerunIn = null;
     }
 
@@ -52,8 +53,8 @@ class PrMerger {
     // Returns whether we are still processing the current PR (so that we can
     // not start the next one):
     // 'true': current PR was found and its processing not yet finished.
-    // 'false': the PR was found and it's processing was finished (succeeded
-    // or failed due to an error).
+    // 'false': either the current PR does not exist or the PR was found
+    // and it's processing was finished (succeeded or failed due to an error).
     async resumeCurrent() {
         const context = await this._current();
         if (!context)
@@ -76,19 +77,9 @@ class PrMerger {
             Logger.info("No current PR found.");
             return null;
         }
-
-        const parsed = Util.ParseTag(tag.ref);
-        Logger.info("Current PR is " + parsed.prNum);
-        assert(parsed.tagName === Util.MergingTag(parsed.prNum));
-
-        let stagingPr = await GH.getPR(parsed.prNum, false);
-        if (stagingPr.state !== 'open') {
-            Logger.error("PR" + parsed.prNum + " was unexpectedly closed");
-            if (!Config.dryRun())
-                await GH.deleteReference(parsed.tagName);
-            return null;
-        }
-
+        const prNum = Util.ParseTag(tag.ref);
+        Logger.info("Current PR is " + prNum);
+        const stagingPr = await GH.getPR(prNum, false);
         return new MergeContext(stagingPr, stagingSha);
     }
 
@@ -99,5 +90,4 @@ class PrMerger {
 
 
 module.exports = PrMerger;
-
 
