@@ -15,7 +15,7 @@ class MergeContext {
         this._pr = pr;
         this._tagSha = (tSha === undefined) ? null : tSha;
         this._shaLimit = 6;
-        // gets a value only if ready/ready_and_delayed
+        // the remainder (>0) of the min or max voting delay (in ms)
         this._votingDelay = null;
     }
 
@@ -434,8 +434,8 @@ class MergeContext {
 
     // Getters
 
-    // the remainder of the max voting delay (in ms)
-    // or 'null', meaning no approvals yet
+    // the processing of this PR is delayed on this
+    // number of milliseconds
     delay() { return this._votingDelay; }
 
     _number() { return this._pr.number; }
