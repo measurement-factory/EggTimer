@@ -5,9 +5,6 @@ const Log = require('./Logger.js');
 const GH = require('./GitHubUtil.js');
 const Util = require('./Util.js');
 
-const commonParams = Util.commonParams;
-const Logger = Log.Logger;
-
 const MsPerHour = 3600 * 1000;
 
 // Processing a single PR
@@ -48,58 +45,46 @@ class MergeContext {
 
         if (!this._prOpen()) {
             this._logError("was unexpectedly closed");
-            if (Config.dryRun()) {
-                this._warnDryRun("finish merging");
-                return false;
-            }
-            await this._cleanupMergeFailed();
-            return true;
+            return await this._cleanupMergeFailed();
         }
 
         const commitStatus = await this._checkStatuses(this._tagSha);
         if (commitStatus === 'pending') {
-            Logger.info("waiting for more staging checks completing");
+            this._log("waiting for more staging checks completing");
             return false;
         } else if (commitStatus === 'failure') {
-            Logger.info("staging checks failed");
-            if (Config.dryRun()) {
-                this._warnDryRun("finish merging");
-                return false;
-            }
-            await this._cleanupMergeFailed();
-            return true;
+            this._log("staging checks failed");
+            return await this._cleanupMergeFailed();
         }
-
         assert(commitStatus === 'success');
-        Logger.info("staging checks succeeded");
-
-        if (Config.dryRun()) {
-            this._warnDryRun("finish merging");
-            return false;
-        }
-
-        if (Config.skipMerge()) {
-            await this._labelMergeReady();
-            this._warnDryRun("finish merging", "skip_merge");
-            return false;
-        }
+        this._log("staging checks succeeded");
 
         const compareStatus = await GH.compareCommits(this._prBaseBranch(), this._mergingTag());
-
-        // already merged
-        if (compareStatus === "identical" || compareStatus === "behind")
+        if (compareStatus === "identical" || compareStatus === "behind") {
+            this._log("already merged");
             return await this._cleanupMerged();
-
+        }
         // note that _needRestart() would notice that the tag is "diverged",
         // but we check compareStatus first to avoid useless api requests
         if (compareStatus === "diverged" || await this._needRestart()) {
-            await this._cleanupMergeFailed();
-            return true;
+            this._log("PR branch and it's base branch diverged");
+            return await this._cleanupMergeFailed();
+        }
+        assert(compareStatus === "ahead");
+
+        if (Config.dryRun()) {
+            this._warnDryRun("finish processing");
+            return false;
+        }
+        if (Config.skipMerge()) {
+            await this._labelMergeReady();
+            this._warnDryRun("finish processing", "skip_merge");
+            return false;
         }
 
-        assert(compareStatus === "ahead");
         if (!(await this._finishMerging()))
             return true;
+        this._log("merged successfully");
         return await this._cleanupMerged();
     }
 
@@ -261,15 +246,18 @@ class MergeContext {
         return true;
     }
 
-    // does not throw
+    // Adjusts PR when it's merge was failed(labels and tag).
+    // Returns 'true' if the PR cleaup was completed, 'false'
+    // otherwise.
     async _cleanupMergeFailed() {
         if (Config.dryRun()) {
             this._warnDryRun("cleanup merge failed");
-            return;
+            return false;
         }
         this._log("merge failed, cleanup...");
         await this._labelMergeFailed();
         await GH.deleteReference(this._mergingTag());
+        return true;
     }
 
     // If approved, returns the number for milliseconds to wait for,
@@ -299,26 +287,20 @@ class MergeContext {
         // where 'reviewer' is a core developer, 'date' the review date and 'state' is either
         // 'approved' or 'changes_requested'.
         let usersVoted = [];
+        // add the author if needed
         if (pushCollaborators.find(el => el.login === this._prAuthor()))
             usersVoted.push({reviewer: this._prAuthor(), date: this._createdAt(), state: 'approved'});
 
         // Reviews are returned in chronological order; the list may contain several
         // reviews from the same reviewer, so the actual 'state' is the most recent one.
         for (let review of reviews) {
+            const reviewState = review.state.toLowerCase();
+            if (reviewState !== 'approved' && reviewState !== 'changes_requested')
+                continue;
             if (!pushCollaborators.find(el => el.login === review.user.login))
                 continue;
-
-            const reviewState = review.state.toLowerCase();
-            let approval = usersVoted.find(el => el.reviewer === review.user.login);
-
-            if (reviewState === 'approved' || reviewState === 'changes_requested') {
-                if (approval !== undefined) {
-                    approval.state = reviewState;
-                    approval.date = review.submitted_at;
-                } else {
-                    usersVoted.push({reviewer: review.user.login, date: review.submitted_at, state: reviewState});
-                }
-            }
+            usersVoted = usersVoted.filter(el => el.reviewer !== review.user.login);
+            usersVoted.push({reviewer: review.user.login, date: review.submitted_at, state: reviewState});
         }
 
         const userRequested = usersVoted.find(el => el.state === 'changes_requested');
@@ -326,25 +308,18 @@ class MergeContext {
             this._log("changes requested by " + userRequested.reviewer);
             return null;
         }
-
         const usersApproved = usersVoted.filter(u => u.state !== 'changes_requested');
+        this.log("approved by " + usersApproved.length + " core developer(s)");
 
-        const defaultMsg = "approved by " + usersApproved.length + " core developer(s)";
         if (usersApproved.length < Config.necessaryApprovals()) {
             this._log("not approved by necessary " + Config.necessaryApprovals() + " votes");
             return null;
-        } else if (usersApproved.length >= Config.sufficientApprovals()) {
-            this._log(defaultMsg);
-        } else {
-            assert(usersApproved.length < Config.sufficientApprovals());
-            const votingDelayMaxMs = Config.votingDelayMax() * MsPerHour;
-            if (prAgeMs < votingDelayMaxMs) {
-                this._log(defaultMsg + ", in maximum voting period");
-                return votingDelayMaxMs - prAgeMs;
-            }
-            this._log(defaultMsg + ", maximum voting period finished");
         }
-        return 0;
+        const votingDelayMaxMs = Config.votingDelayMax() * MsPerHour;
+        if (usersApproved.length >= Config.sufficientApprovals() || prAgeMs >= votingDelayMaxMs)
+            return 0;
+        this._log("in maximum voting period");
+        return votingDelayMaxMs - prAgeMs;
     }
 
     // returns one of:
@@ -400,7 +375,7 @@ class MergeContext {
     }
 
     async _addLabel(label) {
-        let params = commonParams();
+        let params = Util.commonParams();
         params.number = this._number();
         params.labels = [];
         params.labels.push(label);
@@ -410,7 +385,7 @@ class MergeContext {
             // TODO: also extract and check for "already_exists" code:
             // { "message": "Validation Failed", "errors": [ { "resource": "Label", "code": "already_exists", "field": "name" } ] }
             if (e.name === 'ErrorContext' && e.unprocessable()) {
-                Logger.info("addLabel: " + label + " already exists");
+                this._log("addLabel: " + label + " already exists");
                 return;
             }
             throw e;
@@ -507,7 +482,7 @@ class MergeContext {
     _mergePath() { return "pull/" + this._pr.number + "/merge"; }
 
     _log(msg) {
-        Logger.info("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
+        Log.Logger.info("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
     }
 
     _warnDryRun(msg, opt) {

@@ -1,4 +1,3 @@
-const assert = require('assert');
 const Config = require('./Config.js');
 const Log = require('./Logger.js');
 const Logger = Log.Logger;
@@ -22,7 +21,7 @@ class PrMerger {
     // there is a PR still-in-merge.
     async runStep() {
         Logger.info("runStep running");
-        if (await this.resumeCurrent())
+        if (await this._resumeCurrent())
             return true; // still in-process
 
         const prList = await GH.getPRList();
@@ -55,7 +54,7 @@ class PrMerger {
     // 'true': current PR was found and its processing not yet finished.
     // 'false': either the current PR does not exist or the PR was found
     // and it's processing was finished (succeeded or failed due to an error).
-    async resumeCurrent() {
+    async _resumeCurrent() {
         const context = await this._current();
         if (!context)
             return false;
