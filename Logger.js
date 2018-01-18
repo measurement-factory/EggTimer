@@ -4,15 +4,7 @@ const Config = require('./Config.js');
 
 let Logger = null;
 
-Logger = bunyan.createLogger({
-    name: 'eggtimer',
-    streams: [{
-        type: Config.loggerType(),
-        path: Config.loggerPath(),
-        period: Config.loggerPeriod(),
-        count: Config.loggerCount()
-      }]
-    });
+Logger = bunyan.createLogger(Config.loggerParams());
 Logger.addStream({name: "eggtimer-out", stream: process.stdout});
 
 function LogError(err, context) {

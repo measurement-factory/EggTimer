@@ -20,10 +20,7 @@ class ConfigOptions {
         assert(this._sufficientApprovals > 1);
         this._votingDelayMax = conf.voting_delay_max; // in hours
         this._votingDelayMin = conf.voting_delay_min; // in hours
-        this._loggerType = conf.logger_type;
-        this._loggerPath = conf.logger_path;
-        this._loggerPeriod = conf.logger_period;
-        this._loggerCount = conf.logger_count;
+        this._loggerParams = conf.logger_params;
 
         const allOptions = Object.values(this);
         for (let v of allOptions) {
@@ -46,10 +43,7 @@ class ConfigOptions {
     sufficientApprovals() { return this._sufficientApprovals; }
     votingDelayMax() { return this._votingDelayMax; }
     votingDelayMin() { return this._votingDelayMin; }
-    loggerType() { return this._loggerType; }
-    loggerPath() { return this._loggerPath; }
-    loggerPeriod() { return this._loggerPeriod; }
-    loggerCount() { return this._loggerCount; }
+    loggerParams() { return this._loggerParams; }
 
     // fast-forward merge failed
     mergeFailedLabel() { return "S-merge-failed"; }

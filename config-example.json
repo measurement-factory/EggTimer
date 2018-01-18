@@ -1,8 +1,8 @@
 {
     "github_username": "github-bot-username",
-    "github_token": "quai5lieviegoh7na7eej3wuu5quahju8jah1di0",
+    "github_token": "425af12a0743502b322e93a015bcf868e324d56a",
     "github_webhook_path": "/egg-timer",
-    "github_webhook_secret": "maupoos1lirae9pein0chi3ohzikoideing4eesh",
+    "github_webhook_secret": "7205c3fe23514f172f8816b42159bd3f1959f61e",
     "host": "",
     "port": 7777,
     "repo": "squid",
@@ -14,8 +14,15 @@
     "sufficient_approvals": 2,
     "voting_delay_min": 48,
     "voting_delay_max": 240,
-    "logger_type": "rotating-file",
-    "logger_path": "./eggtimer.log",
-    "logger_period": "1d",
-    "logger_count": 3
+    "logger_params" : {
+        "name" : "eggtimer",
+        "streams" : [
+          {
+            "type": "rotating-file",
+            "path": "./eggtimer.log",
+            "period": "1d",
+            "count": 3
+          }
+        ]
+    }
 }

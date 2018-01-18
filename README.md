@@ -38,6 +38,10 @@ are satisfied:
    * If an _optional_ check has failed, but all _required_ ones have passed,
   GitHub will show "Some checks were not successful" message:
   ![](./docs/images/required_passed.png)
+  Note that GitHub displays the same message in a more general case,
+  when some of checks (not necessarily required ones) have failed.
+  It is easy to distinguish these two cases, expanding the check list with
+  "show all checks" link.
 * The PR is approved for merging (see below for voting rules).
 * The PR has a valid PR title and PR description (see below about
   writing PR descriptions).
@@ -52,10 +56,10 @@ request (in FIFO order), but PR merging may still fail.
 Each open pull request is processed according to the following
 algorithm:
 
-1. Create a new commit ("staging commit") as a copy of the PR [merge commit](https://developer.github.com/v3/pulls/#get-a-single-pull-request),
-   with the following attributes:
-   * parent revision as the PR base branch HEAD revision
-   * commit message as the PR title (with appended PR number) and the
+1. Create a [new commit](https://developer.github.com/v3/git/commits/#create-a-commit) ("staging commit") with the following attributes:
+   * 'tree': the tree object of the the PR [merge commit](https://developer.github.com/v3/pulls/#get-a-single-pull-request)
+   * 'parents': a single parent as the SHA of the PR base branch HEAD commit
+   * 'message': the commit message as the PR title (with appended PR number) plus the
      PR description
 2. Reset the staging (a.k.a. "auto") branch to the PR staging commit.
 3. Mark the staging commit with a tag ("merge tag"). The tag holds
@@ -206,9 +210,9 @@ All configuration fields are required.
 *Field* | *Description* | *example*
 --- | --- | ---
 *github_username* | The bot uses this GitHub user account for all GitHub communications, including target branch updates. This user needs to have write access to the repository.| "github_bot_username"
-*github_token* | An authentication token generated for the associated `config::github_bot_username`. | "quai5lieviegoh7na7eej3wuu5quahju8jah1di0"
+*github_token* | An authentication token generated for the associated `config::github_bot_username`. | "425af12a0743502b322e93a015bcf868e324d56a"
 *github_webhook_path* | GitHub webhook URL path. | "/egg-timer"
-*github_webhook_secret* | A random secret string to be used here and in the GitHub webhook configuration. | "maupoos1lirae9pein0chi3ohzikoideing4eesh"
+*github_webhook_secret* | A random secret string to be used here and in the GitHub webhook configuration. | "7205c3fe23514f172f8816b42159bd3f1959f61e"
 *host* | The bot listens for GitHub requests on this IP address. If empty string, the bot will listen on all available IP interfaces. | ""
 *port* | The bot listens for GitHub requests on this TCP port. | 7777
 *repo* | The name of the GitHub repository that the bot should serve. | "squid"
@@ -220,6 +224,7 @@ All configuration fields are required.
 *voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. PR age is measured in hours from the PR creation time. | 48
 *sufficient_approvals* | The minimal number of core developers required for a PR to be merged fast (i.e., without waiting for `config::voting_delay_max`) | 2
 *voting_delay_max* | The maximum merging age of a PR that has fewer than `config::sufficient_approvals` votes. PR age is measured in hours from the PR creation time. | 240
+*logger_params* | JSON-formatted parameters list, passed to the [bunyan](https://github.com/trentm/node-bunyan#constructor-api) library constructor | { "name" : "eggtimer", "streams" : [ { "type": "rotating-file", "path": "./eggtimer.log", "period": "1d", "count": 3 } ]
 
 
 ## Caveats
