@@ -309,7 +309,7 @@ class MergeContext {
             return null;
         }
         const usersApproved = usersVoted.filter(u => u.state !== 'changes_requested');
-        this.log("approved by " + usersApproved.length + " core developer(s)");
+        this._log("approved by " + usersApproved.length + " core developer(s)");
 
         if (usersApproved.length < Config.necessaryApprovals()) {
             this._log("not approved by necessary " + Config.necessaryApprovals() + " votes");
