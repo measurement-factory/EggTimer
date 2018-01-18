@@ -38,8 +38,9 @@ are satisfied:
    * If an _optional_ check has failed, but all _required_ ones have passed,
   GitHub will show "Some checks were not successful" message:
   ![](./docs/images/required_passed.png)
-  Note that GitHub displays the same message in a more general case,
-  when some of checks (not necessarily required ones) have failed.
+  
+     Note that GitHub displays the same message in a more general case,
+     when some of checks (not necessarily required ones) have failed.
   It is easy to distinguish these two cases, expanding the check list with
   "show all checks" link.
 * The PR is approved for merging (see below for voting rules).
@@ -57,10 +58,10 @@ Each open pull request is processed according to the following
 algorithm:
 
 1. Create a [new commit](https://developer.github.com/v3/git/commits/#create-a-commit) ("staging commit") with the following attributes:
-   * 'tree': the tree object of the the PR [merge commit](https://developer.github.com/v3/pulls/#get-a-single-pull-request)
-   * 'parents': a single parent as the SHA of the PR base branch HEAD commit
+   * 'tree': the tree object of the the PR [merge commit](https://developer.github.com/v3/pulls/#get-a-single-pull-request).
+   * 'parents': a single parent as the SHA of the PR base branch HEAD commit.
    * 'message': the commit message as the PR title (with appended PR number) plus the
-     PR description
+     PR description.
 2. Reset the staging (a.k.a. "auto") branch to the PR staging commit.
 3. Mark the staging commit with a tag ("merge tag"). The tag holds
    the being-in-merge PR number, which is used by the bot in next steps.
@@ -224,7 +225,7 @@ All configuration fields are required.
 *voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. PR age is measured in hours from the PR creation time. | 48
 *sufficient_approvals* | The minimal number of core developers required for a PR to be merged fast (i.e., without waiting for `config::voting_delay_max`) | 2
 *voting_delay_max* | The maximum merging age of a PR that has fewer than `config::sufficient_approvals` votes. PR age is measured in hours from the PR creation time. | 240
-*logger_params* | JSON-formatted parameters list, passed to the [bunyan](https://github.com/trentm/node-bunyan#constructor-api) library constructor | { "name" : "eggtimer", "streams" : [ { "type": "rotating-file", "path": "./eggtimer.log", "period": "1d", "count": 3 } ]
+*logger_params* | JSON-formatted parameters list, passed to the [bunyan](https://github.com/trentm/node-bunyan#constructor-api) library constructor. | { "name" : "eggtimer", "streams" : [ { "type": "rotating-file", "path": "./eggtimer.log", "period": "1d", "count": 3 } ]
 
 
 ## Caveats
