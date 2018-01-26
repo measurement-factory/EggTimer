@@ -327,13 +327,20 @@ class MergeContext {
     // 'success' if all of required are 'success'
     // 'error' otherwise
     async _checkStatuses(ref) {
-
-        const requiredContexts = await GH.getProtectedBranchRequiredStatusChecks(this._prBaseBranch());
+        let requiredContexts;
+        try {
+            requiredContexts = await GH.getProtectedBranchRequiredStatusChecks(this._prBaseBranch());
+        } catch (e) {
+           if (e.name === 'ErrorContext' && e.notFound())
+               this._log("required status checks not found not found");
+           else
+               throw e;
+        }
         // https://developer.github.com/v3/repos/statuses/#get-the-combined-status-for-a-specific-ref
         // state is one of 'failure', 'error', 'pending' or 'success'.
         // We treat both 'failure' and 'error' as an 'error'.
         let combinedStatus = await GH.getStatuses(ref);
-        if (requiredContexts.length === 0) {
+        if (requiredContexts === undefined || requiredContexts.length === 0) {
             this._logError("no required contexts found");
             // rely on all available checks then
             return combinedStatus.state;
