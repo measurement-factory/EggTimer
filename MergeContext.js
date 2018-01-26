@@ -44,7 +44,7 @@ class MergeContext {
     async finishProcessing() {
 
         if (!this._prOpen()) {
-            this._logError("was unexpectedly closed");
+            this._log("was unexpectedly closed");
             return await this._cleanupMergeFailed();
         }
 
@@ -341,7 +341,7 @@ class MergeContext {
         // We treat both 'failure' and 'error' as an 'error'.
         let combinedStatus = await GH.getStatuses(ref);
         if (requiredContexts === undefined || requiredContexts.length === 0) {
-            this._logError("no required contexts found");
+            this._log("no required contexts found");
             // rely on all available checks then
             return combinedStatus.state;
         }
@@ -495,12 +495,6 @@ class MergeContext {
     _warnDryRun(msg, opt) {
         const option = opt === undefined ? "dry_run" : opt;
         this._log("skip " + msg + " due to " + option + " option");
-    }
-
-    _logError(err, context) {
-        assert(context);
-        let msg = this._toString() + " " + context;
-        Log.LogError(err, msg);
     }
 
     _toString() {
