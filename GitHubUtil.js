@@ -315,19 +315,38 @@ function removeLabel(label, prNum) {
   });
 }
 
+// XXX: remove if not needed, since the "required_status_checks" api call sometimes
+// does not work(?) for organization repositories (returns 404 Not Found).
+//function getProtectedBranchRequiredStatusChecks(branch) {
+//    let params = commonParams();
+//    params.branch = branch;
+//    return new Promise( (resolve, reject) => {
+//      GitHub.authenticate(GitHubAuthentication);
+//      GitHub.repos.getProtectedBranchRequiredStatusChecks(params, (err, res) => {
+//          if (err) {
+//             reject(new ErrorContext(err, getProtectedBranchRequiredStatusChecks.name, params));
+//             return;
+//          }
+//          const result = {checks: res.data.contexts.length};
+//          logApiResult(getProtectedBranchRequiredStatusChecks.name, params, result);
+//          resolve(res.data.contexts);
+//      });
+//    });
+//}
+
 function getProtectedBranchRequiredStatusChecks(branch) {
     let params = commonParams();
     params.branch = branch;
     return new Promise( (resolve, reject) => {
       GitHub.authenticate(GitHubAuthentication);
-      GitHub.repos.getProtectedBranchRequiredStatusChecks(params, (err, res) => {
+      GitHub.repos.getBranch(params, (err, res) => {
           if (err) {
              reject(new ErrorContext(err, getProtectedBranchRequiredStatusChecks.name, params));
              return;
           }
-          const result = {checks: res.data.contexts.length};
+          const result = {checks: res.data.protection.required_status_checks.contexts.length};
           logApiResult(getProtectedBranchRequiredStatusChecks.name, params, result);
-          resolve(res.data.contexts);
+          resolve(res.data.protection.required_status_checks.contexts);
       });
     });
 }
