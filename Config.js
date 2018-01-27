@@ -36,7 +36,7 @@ class ConfigOptions {
     host() { return this._host; }
     port() { return this._port; }
     owner() { return this._owner; }
-    stagingBranch() { return "heads/" + this._stagingBranch + "_branch"; }
+    stagingBranch() { return "heads/" + this._stagingBranch; }
     dryRun() { return this._dryRun; }
     skipMerge() { return this._skipMerge; }
     necessaryApprovals() { return this._necessaryApprovals; }
