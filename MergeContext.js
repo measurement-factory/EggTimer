@@ -54,7 +54,7 @@ class MergeContext {
             return false;
         } else if (commitStatus === 'failure') {
             this._log("staging checks failed");
-            return await this._cleanupMergeFailed();
+            return await this._cleanupMergeFailed(this._labelStagingFailed);
         }
         assert(commitStatus === 'success');
         this._log("staging checks succeeded");
@@ -121,8 +121,6 @@ class MergeContext {
             if (this._prMergeable() !== true)
                 msg += " due to conflicts with " + this._prBaseBranch();
             this._log(msg);
-            if (!Config.dryRun())
-                await this._labelStagingFailed();
             return false;
         } else {
             this._log("will re-try: merge commit has changed since last failed staging checks");
@@ -150,8 +148,7 @@ class MergeContext {
         return false;
     }
 
-    // Checks whether the PR is ready for merge (all PR lamps are 'green').
-    // Also forbids merging the already merged PR (marked with label).
+    // checks whether the PR is ready for merge
     async _checkMergeConditions(desc) {
         this._log(desc);
 
@@ -201,7 +198,7 @@ class MergeContext {
         return true;
     }
 
-    // Creates a 'merge commit' and adjusts staging_branch.
+    // Creates a 'staging commit' and adjusts staging_branch.
     async _startMerging() {
         this._log("start merging...");
         const baseSha = await GH.getReference(this._prBaseBranchPath());
@@ -249,13 +246,15 @@ class MergeContext {
     // Adjusts PR when it's merge was failed(labels and tag).
     // Returns 'true' if the PR cleaup was completed, 'false'
     // otherwise.
-    async _cleanupMergeFailed() {
+    async _cleanupMergeFailed(labelsCleanup) {
         if (Config.dryRun()) {
             this._warnDryRun("cleanup merge failed");
             return false;
         }
         this._log("merge failed, cleanup...");
-        await this._labelMergeFailed();
+        if (labelsCleanup === undefined)
+            labelsCleanup = this._labelMergeFailed;
+        await labelsCleanup.bind(this);
         await GH.deleteReference(this._mergingTag());
         return true;
     }
