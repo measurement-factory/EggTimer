@@ -34,7 +34,7 @@ class MergeContext {
             return false;
         }
         await this._startMerging();
-        await this._labelMerging();
+        await this._labelWaitingStagingChecks();
         return true;
     }
 
@@ -54,7 +54,7 @@ class MergeContext {
             return false;
         } else if (commitStatus === 'failure') {
             this._log("staging checks failed");
-            return await this._cleanupMergeFailed(this._labelStagingFailed);
+            return await this._cleanupMergeFailed(this._labelFailedStagingChecks);
         }
         assert(commitStatus === 'success');
         this._log("staging checks succeeded");
@@ -77,7 +77,7 @@ class MergeContext {
             return false;
         }
         if (Config.skipMerge()) {
-            await this._labelMergeReady();
+            await this._labelPassedStagingChecks();
             this._warnDryRun("finish processing", "skip_merge");
             return false;
         }
@@ -254,7 +254,7 @@ class MergeContext {
         }
         this._log("merge failed, cleanup...");
         if (labelsCleanup === undefined)
-            labelsCleanup = this._labelMergeFailed;
+            labelsCleanup = this._labelFailedOther;
         await labelsCleanup.bind(this);
         await GH.deleteReference(this._mergingTag());
         return true;
@@ -400,43 +400,43 @@ class MergeContext {
     }
 
     async _labelCheckMessage(isValid) {
-        const label = Config.invalidMessageLabel();
+        const label = Config.failedDescriptionLabel();
         if (isValid)
             await this._removeLabel(label);
         else
             await this._addLabel(label);
     }
 
-    async _labelMerging() {
-        await this._removeLabel(Config.mergeReadyLabel());
-        await this._removeLabel(Config.mergeFailedLabel());
-        await this._removeLabel(Config.stagingChecksFailedLabel());
-        await this._addLabel(Config.mergingLabel());
+    async _labelWaitingStagingChecks() {
+        await this._removeLabel(Config.passedStagingChecksLabel());
+        await this._removeLabel(Config.failedOtherLabel());
+        await this._removeLabel(Config.failedStagingChecksLabel());
+        await this._addLabel(Config.waitingStagingChecksLabel());
     }
 
     async _labelMerged() {
-        await this._removeLabel(Config.mergingLabel());
-        await this._removeLabel(Config.mergeReadyLabel());
-        await this._removeLabel(Config.mergeFailedLabel());
-        await this._removeLabel(Config.stagingChecksFailedLabel());
+        await this._removeLabel(Config.waitingStagingChecksLabel());
+        await this._removeLabel(Config.passedStagingChecksLabel());
+        await this._removeLabel(Config.failedOtherLabel());
+        await this._removeLabel(Config.failedStagingChecksLabel());
         await this._addLabel(Config.mergedLabel());
     }
 
-    async _labelMergeFailed() {
-        await this._removeLabel(Config.mergingLabel());
-        await this._removeLabel(Config.mergeReadyLabel());
-        await this._addLabel(Config.mergeFailedLabel());
+    async _labelFailedOther() {
+        await this._removeLabel(Config.waitingStagingChecksLabel());
+        await this._removeLabel(Config.passedStagingChecksLabel());
+        await this._addLabel(Config.failedOtherLabel());
     }
 
-    async _labelStagingFailed() {
-        await this._removeLabel(Config.mergingLabel());
-        await this._addLabel(Config.stagingChecksFailedLabel());
+    async _labelFailedStagingChecks() {
+        await this._removeLabel(Config.waitingStagingChecksLabel());
+        await this._addLabel(Config.failedStagingChecksLabel());
     }
 
-    async _labelMergeReady() {
-        await this._removeLabel(Config.mergingLabel());
-        await this._removeLabel(Config.stagingChecksFailedLabel());
-        await this._addLabel(Config.mergeReadyLabel());
+    async _labelPassedStagingChecks() {
+        await this._removeLabel(Config.waitingStagingChecksLabel());
+        await this._removeLabel(Config.failedStagingChecksLabel());
+        await this._addLabel(Config.passedStagingChecksLabel());
     }
 
     // Getters

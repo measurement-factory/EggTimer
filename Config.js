@@ -46,18 +46,18 @@ class ConfigOptions {
     loggerParams() { return this._loggerParams; }
 
     // fast-forward merge failed
-    mergeFailedLabel() { return "S-merge-failed"; }
+    failedOtherLabel() { return "M-failed-other"; }
     // some of required staging checks failed
-    stagingChecksFailedLabel() { return "S-staging-checks-failed"; }
+    failedStagingChecksLabel() { return "M-failed-staging-checks"; }
     // fast-forward merge succeeded
-    mergedLabel() { return "S-merged"; }
+    mergedLabel() { return "M-merged"; }
     // merge started (tag and staging branch successfully adjusted)
-    mergingLabel() { return "S-merging"; }
+    waitingStagingChecksLabel() { return "M-waiting-staging-checks"; }
     // Merge succeeded up to fast-forward step. For testing purpose.
-    mergeReadyLabel() { return "S-merge-ready"; }
+    passedStagingChecksLabel() { return "M-passed-staging-checks"; }
     // PR message does not satisfy to requirements (e.g., lines
     // should have <= 72 characters)
-    invalidMessageLabel() { return "S-invalid-message"; }
+    failedDescriptionLabel() { return "M-failed-description"; }
 }
 
 const configFile = process.argv.length > 2 ? process.argv[2] : './config.json';
