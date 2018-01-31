@@ -60,9 +60,9 @@ algorithm:
 
 1. [Create](https://developer.github.com/v3/git/commits/#create-a-commit
    ) a new "staging commit" with the following components:
-   * `tree`: The git tree object of the PR [merge commit](https://develo
-     per.github.com/v3/pulls/#get-a-single-pull-request) created by
-     GitHub.
+   * `tree`: The git tree object of the PR
+     [merge commit](https://developer.github.com/v3/pulls/#get-a-single-pull-request)
+     created by GitHub.
    * `parents`: The HEAD commit of the PR base branch.
    * `message`: PR title (with an appended PR number) plus the PR
      description.
@@ -149,9 +149,8 @@ request state:
   were fixed.
 * `M-failed-other`: A fatal PR-specific error other than the staging
   branch test failure (the latter is marked with
-  `M-failed-staging-checks`). (XXX: finishProcessing() sets this label
-  even if the staging branch test fail). It is probably necessary to
-  consult bot logs to determine what happened. The bot does not attempt
+  `M-failed-staging-checks`). It is probably necessary to
+  consult CI logs to determine what happened. The bot does not attempt
   to merge this PR again until the PR branch or PR target branch change.
   When the bot notices that change, it removes this label.
 * `M-merged`: The PR was successfully merged (and probably closed).
@@ -220,7 +219,7 @@ Properly counting such votes is a missing feature.
 The bot may be started like any node.js script. For example:
 
 ```
-node eggtimer.js /etc/eggtimer.json
+node Main.js /etc/eggtimer/config.json
 ```
 
 The bot can be safely killed and started at any time because it uses the
