@@ -22,7 +22,7 @@ class MergeContext {
     // Returns 'true' if all PR checks passed successfully and merging
     // started,'false' if we can't start the PR due to some failed checks.
     async startProcessing() {
-        if (!(await this._checkMergeConditions("checking merge preconditions...")))
+        if (!(await this._checkMergeConditions("precondition")))
             return false;
 
         // 'slow burner' case
@@ -101,32 +101,30 @@ class MergeContext {
     }
 
     // Check 'merge tag' state as merge condition.
-    // Returns 'true' if the tag does not exist or the caller (i.e., preconditions
-    // verifier) should ignore this tag;
-    // 'false' if the non-stale tag exists and it's status is 'failure'.
-    async _ignoreTag() {
+    // Returns true if there is a non-stale tag with 'failure' status.
+    async _stagingFailed() {
         await this._loadTag();
         if (!this._tagSha)
-            return true;
+            return false;
 
         const commitStatus = await this._checkStatuses(this._tagSha);
         if (commitStatus !== 'failure')
-            return true;
+            return false;
 
         this._log("staging checks failed some time ago");
         if (await this._tagIsFresh()) {
-            let msg = "will not re-try: merge commit has not changed since last failed staging checks";
+            let msg = "merge commit has not changed";
             // the base branch could be changed but resulting with new conflicts,
             // merge commit is not updated then
             if (this._prMergeable() !== true)
                 msg += " due to conflicts with " + this._prBaseBranch();
             this._log(msg);
-            return false;
+            return true;
         } else {
-            this._log("will re-try: merge commit has changed since last failed staging checks");
+            this._log("merge commit has changed");
             if (!Config.dryRun())
                 await GH.deleteReference(this._mergingTag());
-            return true;
+            return false;
         }
     }
 
@@ -143,14 +141,14 @@ class MergeContext {
     async _needRestart() {
         if (!(await this._tagIsFresh()))
             return true;
-        if (!(await this._checkMergeConditions("checking merge postconditions...")))
+        if (!(await this._checkMergeConditions("postcondition")))
             return true;
         return false;
     }
 
     // checks whether the PR is ready for merge
     async _checkMergeConditions(desc) {
-        this._log(desc);
+        this._log("checking merge " + desc + "s...");
 
         const pr = await GH.getPR(this._number(), true);
         // refresh PR data
@@ -158,7 +156,7 @@ class MergeContext {
         this._pr = pr;
 
         if (!this._prOpen()) {
-            this._log("unexpectedly closed");
+            this._log(desc + " 'open' failed");
             return false;
         }
 
@@ -166,33 +164,36 @@ class MergeContext {
         if (!Config.dryRun())
             await this._labelCheckMessage(messageValid);
         if (!messageValid) {
-            this._log("invalid PR message");
+            this._log(desc + " 'commit message' failed");
             return false;
         }
 
         if (!this._prMergeable()) {
-            this._log("not mergeable yet.");
+            this._log(desc + " 'mergeable' failed");
             return false;
         }
 
         const commitStatus = await this._checkStatuses(this._prHeadSha());
         if (commitStatus !== 'success') {
-            this._log("commit status is " + commitStatus);
+            this._log(desc + " 'status' failed, status is " + commitStatus);
             return false;
         }
 
         if (await this._hasLabel(Config.mergedLabel(), this._number())) {
-            this._log("already merged");
+            this._log(desc + " 'already merged' failed");
             return false;
         }
 
         const delay = await this._checkApproved();
-        // not_approved
-        if (delay === null)
+        if (delay === null) {
+            this._log(desc + " 'approved' failed");
             return false;
+        }
 
-        if (!(await this._ignoreTag()))
+        if (await this._stagingFailed()) {
+            this._log(desc + " 'no fresh tag with failed staging checks' failed'");
             return false;
+        }
 
         this._votingDelay = delay;
         return true;
@@ -260,7 +261,7 @@ class MergeContext {
     }
 
     // If approved, returns the number for milliseconds to wait for,
-    // or '0', meaning 'ready'. If not approved, returns null.
+    // or '0', meaning 'ready'. If not approved or disqualified returns null.
     async _checkApproved() {
         const collaborators = await GH.getCollaborators();
         const pushCollaborators = collaborators.filter(c => c.permissions.push === true);
