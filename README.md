@@ -133,13 +133,8 @@ request state:
 * `M-passed-staging-checks`: Similar to the GitHub "green check" mark
   for the staging branch commit (but ignores failures of optional
   checks). Applied only if `config::skip_merge` option is on. The bot
-  removes this label when applying any other label (XXX: Except
-  M-failed-staging-checks. To improve code consistency and to avoid
-  lying in documentation, we should either remove this label only when
-  (re)setting the first label (i.e., M-waiting-staging-checks) or remove
-  this label when setting any other label, without making an exception
-  for M-failed-staging-checks. The implementation plans for the
-  currently unsupported labels may suggest the best way forward here.).
+  removes this label when either PR was successfully merged or staging
+  results are no longer fresh/applicable.
 * `M-failed-staging-checks`: Essentially duplicates GitHub "red x" mark
   for the _staging commit_. The bot removes this label when it notices
   that the failed checks are no longer fresh/applicable.

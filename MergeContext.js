@@ -162,7 +162,7 @@ class MergeContext {
 
         const messageValid = this._prMessageValid();
         if (!Config.dryRun())
-            await this._labelCheckMessage(messageValid);
+            await this._labelFailedDescription(messageValid);
         if (!messageValid) {
             this._log(desc + " 'commit message' failed");
             return false;
@@ -399,7 +399,7 @@ class MergeContext {
         }
     }
 
-    async _labelCheckMessage(isValid) {
+    async _labelFailedDescription(isValid) {
         const label = Config.failedDescriptionLabel();
         if (isValid)
             await this._removeLabel(label);
@@ -417,8 +417,6 @@ class MergeContext {
     async _labelMerged() {
         await this._removeLabel(Config.waitingStagingChecksLabel());
         await this._removeLabel(Config.passedStagingChecksLabel());
-        await this._removeLabel(Config.failedOtherLabel());
-        await this._removeLabel(Config.failedStagingChecksLabel());
         await this._addLabel(Config.mergedLabel());
     }
 
@@ -435,7 +433,6 @@ class MergeContext {
 
     async _labelPassedStagingChecks() {
         await this._removeLabel(Config.waitingStagingChecksLabel());
-        await this._removeLabel(Config.failedStagingChecksLabel());
         await this._addLabel(Config.passedStagingChecksLabel());
     }
 
