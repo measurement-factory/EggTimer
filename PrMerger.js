@@ -25,7 +25,7 @@ class PrMerger {
             return true; // still in-process
 
         const prList = await GH.getPRList();
-        prList.sort((pr1, pr2) => { return new Date(pr1.created_at) - new Date(pr2.created_at); });
+        prList.sort((pr1, pr2) => { return pr1.number - pr2.number; });
 
         while (prList.length) {
             try {
@@ -65,7 +65,7 @@ class PrMerger {
 
     // Loads 'being-in-merge' PR, if exists (the PR has tag and staging_branch points to the tag).
     async _current() {
-        Logger.info("Looking for current PR...");
+        Logger.info("Looking for the current PR...");
         const stagingSha = await GH.getReference(Config.stagingBranch());
         // request all repository tags
         let tags = await GH.getTags();

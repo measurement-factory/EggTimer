@@ -1,4 +1,5 @@
 const fs = require('fs');
+const timestring = require('timestring');
 const assert = require('assert');
 
 class ConfigOptions {
@@ -14,12 +15,12 @@ class ConfigOptions {
         this._owner = conf.owner;
         this._stagingBranch = conf.staging_branch;
         this._dryRun = conf.dry_run;
-        this._skipMerge = conf.skip_merge;
+        this._mergedRun = conf.merged_run;
         this._necessaryApprovals = conf.necessary_approvals;
         this._sufficientApprovals = conf.sufficient_approvals;
         assert(this._sufficientApprovals > 1);
-        this._votingDelayMax = conf.voting_delay_max; // in hours
-        this._votingDelayMin = conf.voting_delay_min; // in hours
+        this._votingDelayMax = timestring(conf.voting_delay_max, 'ms');
+        this._votingDelayMin = timestring(conf.voting_delay_min, 'ms');
         this._loggerParams = conf.logger_params;
 
         const allOptions = Object.values(this);
@@ -38,7 +39,7 @@ class ConfigOptions {
     owner() { return this._owner; }
     stagingBranch() { return "heads/" + this._stagingBranch; }
     dryRun() { return this._dryRun; }
-    skipMerge() { return this._skipMerge; }
+    mergedRun() { return this._mergedRun; }
     necessaryApprovals() { return this._necessaryApprovals; }
     sufficientApprovals() { return this._sufficientApprovals; }
     votingDelayMax() { return this._votingDelayMax; }
@@ -53,10 +54,9 @@ class ConfigOptions {
     mergedLabel() { return "M-merged"; }
     // merge started (tag and staging branch successfully adjusted)
     waitingStagingChecksLabel() { return "M-waiting-staging-checks"; }
-    // Merge succeeded up to fast-forward step. For testing purpose.
+    // passed staging checks (in staged-run mode)
     passedStagingChecksLabel() { return "M-passed-staging-checks"; }
-    // PR message does not satisfy to requirements (e.g., lines
-    // should have <= 72 characters)
+    // future commit message violates requirements
     failedDescriptionLabel() { return "M-failed-description"; }
 }
 

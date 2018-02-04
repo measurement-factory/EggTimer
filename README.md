@@ -71,7 +71,7 @@ algorithm:
    using a GitHub-editable commit message.
 2. Reset the staging (a.k.a. "auto") branch to the PR staging commit.
    The previous state of the staging branch is ignored.
-3. Remember the staging commit using a "merge tag". The bot uses this
+3. Remember the staging commit using a "staging tag". The bot uses this
    git tag to identify the being-merged PR in case the bot is killed
    while running the subsequent merging steps (that may take a while).
 4. Wait for GitHub to report CI test results for the staging branch. The
@@ -81,7 +81,7 @@ algorithm:
 5. Fast forward the PR target branch (usually "master") to the
    now-tested staging commit.
 6. Label the PR as merged (see below for PR labels), close the PR, and
-   remove its merge tag.
+   remove its staging tag.
 
 If the bot is killed while executing the above algorithm, it will resume
 from the beginning of the unfinished step.
@@ -132,7 +132,7 @@ request state:
   have completed.
 * `M-passed-staging-checks`: Similar to the GitHub "green check" mark
   for the staging branch commit (but ignores failures of optional
-  checks). Applied only if `config::skip_merge` option is on. The bot
+  checks). Applied only if `config::merged_run` option is on. The bot
   removes this label when either PR was successfully merged or staging
   results are no longer fresh/applicable.
 * `M-failed-staging-checks`: Essentially duplicates GitHub "red x" mark
@@ -159,13 +159,14 @@ may find them useful when determining the current state of a PR.
 ## Commit message
 
 The staging commit message and, hence, the target branch commit is
-formed by concatenating the PR title (with an appended PR number), and
-empty line, and the PR description.
+formed by concatenating the PR title (with an appended PR number), an
+empty line and the PR description.
 
 Neither the title nor the description are currently processed to convert
 GitHub markdown to plain text. However, both texts must conform to the
-72 characters/line limit. PRs violating this limit are labeled
-`M-failed-description` and are not merged.
+72 characters/line limit. The automatically added ` #(NNN)` title suffix
+further reduces the maximum PR title length to ~65 characters. PRs violating
+these limits are labeled `M-failed-description` and are not merged.
 
 
 ## Voting and PR approvals
@@ -262,12 +263,12 @@ All configuration fields are required.
 *repo* | The name of the GitHub repository that the bot should serve. | "squid"
 *owner* | The owner (a person or organization) of the GitHub repository. | "squid-cache"
 *dry_run*| A boolean option to enable read-only, no-modifications mode where the bot logs pull requests selected for merging but skips further merging steps, including PR labeling and commit tagging | false
-*skip_merge*| A boolean option to enable no-final-modifications mode where the bot performs all the merging steps up to (and not including) the target branch update. Eligible PRs are merged into and tested on the staging branch but are never merged into their target branches. | false
+*merged_run*| A boolean option to enable no-final-modifications mode where the bot performs all the merging steps up to (and not including) the target branch update. Eligible PRs are merged into and tested on the staging branch but are never merged into their target branches. | false
 *staging_branch* | The name of the bot-maintained git branch used for testing PR changes as if they were merged into their target branch. | auto
 *necessary_approvals* | The minimal number of core developers required for a PR to be merged. PRs with fewer votes are not merged, regardless of their age. | 1
-*voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. PR age is measured in hours since the PR creation time. | 48
+*voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. The PR age string should comply with [timestring](https://github.com/mike182uk/timestring) parser. | "2d"
 *sufficient_approvals* | The minimal number of core developers required for a PR to be merged fast (i.e., without waiting for `config::voting_delay_max`) | 2
-*voting_delay_max* | The maximum merging age of a PR that has fewer than `config::sufficient_approvals` votes. PR age is measured in hours since the PR creation time. | 240
+*voting_delay_max* | The maximum merging age of a PR that has fewer than `config::sufficient_approvals` votes. The PR age string should comply with [timestring](https://github.com/mike182uk/timestring) parser. | "10d"
 *logger_params* | A JSON-formatted parameter list for the [Bunyan](https://github.com/trentm/node-bunyan) logging library [constructor](https://github.com/trentm/node-bunyan#constructor-api). | <pre>{<br>    "name": "eggtimer",<br>    "streams": [ ... ]<br>}</pre>
 
 

@@ -8,12 +8,12 @@
     "repo": "squid",
     "owner": "squid-cache",
     "dry_run": false,
-    "skip_merge": false,
+    "merged_run": false,
     "staging_branch": "auto",
     "necessary_approvals": 1,
     "sufficient_approvals": 2,
-    "voting_delay_min": 48,
-    "voting_delay_max": 240,
+    "voting_delay_min": "2d",
+    "voting_delay_max": "10d",
     "logger_params" : {
         "name" : "eggtimer",
         "streams" : [

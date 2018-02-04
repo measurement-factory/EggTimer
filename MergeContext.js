@@ -1,11 +1,8 @@
 const assert = require('assert');
-const endOfLine = require('os').EOL;
 const Config = require('./Config.js');
 const Log = require('./Logger.js');
 const GH = require('./GitHubUtil.js');
 const Util = require('./Util.js');
-
-const MsPerHour = 3600 * 1000;
 
 // Processing a single PR
 class MergeContext {
@@ -59,7 +56,7 @@ class MergeContext {
         assert(commitStatus === 'success');
         this._log("staging checks succeeded");
 
-        const compareStatus = await GH.compareCommits(this._prBaseBranch(), this._mergingTag());
+        const compareStatus = await GH.compareCommits(this._prBaseBranch(), this._stagingTag());
         if (compareStatus === "identical" || compareStatus === "behind") {
             this._log("already merged");
             return await this._cleanupMerged();
@@ -76,9 +73,9 @@ class MergeContext {
             this._warnDryRun("finish processing");
             return false;
         }
-        if (Config.skipMerge()) {
+        if (Config.mergedRun()) {
             await this._labelPassedStagingChecks();
-            this._warnDryRun("finish processing", "skip_merge");
+            this._warnDryRun("finish processing", "merged_run");
             return false;
         }
 
@@ -88,44 +85,43 @@ class MergeContext {
         return await this._cleanupMerged();
     }
 
-    // Tries to load 'merge tag' for the PR.
+    // Tries to load 'staging tag' for the PR.
     async _loadTag() {
        try {
-           this._tagSha = await GH.getReference(this._mergingTag());
+           this._tagSha = await GH.getReference(this._stagingTag());
        } catch (e) {
            if (e.name === 'ErrorContext' && e.notFound())
-               this._log(this._mergingTag() + " not found");
+               this._log(this._stagingTag() + " not found");
            else
                throw e;
        }
     }
 
-    // Check 'merge tag' state as merge condition.
-    // Returns true if there is a non-stale tag with 'failure' status.
+    // Check 'staging tag' state as merge condition.
+    // Returns true if there is a fresh tag with 'failure' status.
     async _stagingFailed() {
         await this._loadTag();
         if (!this._tagSha)
             return false;
 
-        const commitStatus = await this._checkStatuses(this._tagSha);
-        if (commitStatus !== 'failure')
-            return false;
-
-        this._log("staging checks failed some time ago");
-        if (await this._tagIsFresh()) {
-            let msg = "merge commit has not changed";
-            // the base branch could be changed but resulting with new conflicts,
-            // merge commit is not updated then
-            if (this._prMergeable() !== true)
-                msg += " due to conflicts with " + this._prBaseBranch();
-            this._log(msg);
-            return true;
+        if (await this._tagIsFresh() ) {
+            const commitStatus = await this._checkStatuses(this._tagSha);
+            if (commitStatus === 'failure') {
+                this._log("staging checks failed some time ago");
+                let msg = "staging tag is fresh";
+                if (this._prMergeable() !== true)
+                    msg += ", merge commit did not change due to conflicts with " + this._prBaseBranch();
+                this._log(msg);
+                return true;
+            } else {
+                this._log("warning: found not-failed staging tag");
+            }
         } else {
-            this._log("merge commit has changed");
-            if (!Config.dryRun())
-                await GH.deleteReference(this._mergingTag());
-            return false;
+            this._log("staging tag is stale");
         }
+        if (!Config.dryRun())
+            await GH.deleteReference(this._stagingTag());
+        return false;
     }
 
     // whether the tag and GitHub-generated PR 'merge commit' are equal
@@ -206,7 +202,7 @@ class MergeContext {
         const mergeSha = await GH.getReference("pull/" + this._number() + "/merge");
         const mergeCommit = await GH.getCommit(mergeSha);
         const tempCommitSha = await GH.createCommit(mergeCommit.treeSha, this._prMessage(), [baseSha]);
-        this._tagSha = await GH.createReference(tempCommitSha, "refs/" + this._mergingTag());
+        this._tagSha = await GH.createReference(tempCommitSha, "refs/" + this._stagingTag());
         await GH.updateReference(Config.stagingBranch(), this._tagSha, true);
     }
 
@@ -240,7 +236,7 @@ class MergeContext {
         this._log("merged, cleanup...");
         await this._labelMerged();
         await GH.updatePR(this._number(), 'closed');
-        await GH.deleteReference(this._mergingTag());
+        await GH.deleteReference(this._stagingTag());
         return true;
     }
 
@@ -256,7 +252,7 @@ class MergeContext {
         if (labelsCleanup === undefined)
             labelsCleanup = this._labelFailedOther;
         await labelsCleanup.bind(this);
-        await GH.deleteReference(this._mergingTag());
+        await GH.deleteReference(this._stagingTag());
         return true;
     }
 
@@ -277,10 +273,9 @@ class MergeContext {
         let reviews = await GH.getReviews(this._number());
 
         const prAgeMs = new Date() - new Date(this._createdAt());
-        const votingDelayMinMs = Config.votingDelayMin() * MsPerHour;
-        if (prAgeMs < votingDelayMinMs) {
+        if (prAgeMs < Config.votingDelayMin()) {
             this._log("in minimal voting period");
-            return votingDelayMinMs - prAgeMs;
+            return Config.votingDelayMin() - prAgeMs;
         }
 
         // An array of [{reviewer, date, state}] elements,
@@ -315,11 +310,10 @@ class MergeContext {
             this._log("not approved by necessary " + Config.necessaryApprovals() + " votes");
             return null;
         }
-        const votingDelayMaxMs = Config.votingDelayMax() * MsPerHour;
-        if (usersApproved.length >= Config.sufficientApprovals() || prAgeMs >= votingDelayMaxMs)
+        if (usersApproved.length >= Config.sufficientApprovals() || prAgeMs >= Config.votingDelayMax())
             return 0;
         this._log("in maximum voting period");
-        return votingDelayMaxMs - prAgeMs;
+        return Config.votingDelayMax() - prAgeMs;
     }
 
     // returns one of:
@@ -447,8 +441,7 @@ class MergeContext {
     _prHeadSha() { return this._pr.head.sha; }
 
     _prMessage() {
-        return this._pr.title + endOfLine + this._pr.body + endOfLine +
-            "(PR #" + this._pr.number + ")";
+        return this._pr.title + ' (#' + this._pr.number + ')' + '\n\n' + this._pr.body;
     }
 
     _prMessageValid() {
@@ -479,7 +472,7 @@ class MergeContext {
 
     _prOpen() { return this._pr.state === 'open'; }
 
-    _mergingTag() { return Util.MergingTag(this._pr.number); }
+    _stagingTag() { return Util.StagingTag(this._pr.number); }
 
     _createdAt() { return this._pr.created_at; }
 

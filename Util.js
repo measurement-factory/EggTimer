@@ -26,9 +26,9 @@ function ParseTag(ref) {
     return matched[3];
 }
 
-function MergingTag(prNum) {
+function StagingTag(prNum) {
     assert(prNum);
-    return "tags/T-merging-PR" + prNum;
+    return "tags/M-staged-PR" + prNum;
 }
 
 // An error context for promisificated wrappers.
@@ -75,7 +75,7 @@ class ErrorContext extends Error {
 module.exports = {
     sleep: sleep,
     commonParams: commonParams,
-    MergingTag: MergingTag,
+    StagingTag: StagingTag,
     MatchTag: MatchTag,
     ParseTag: ParseTag,
     ErrorContext: ErrorContext
