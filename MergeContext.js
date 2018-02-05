@@ -19,7 +19,8 @@ class MergeContext {
     // Returns 'true' if all PR checks passed successfully and merging
     // started,'false' if we can't start the PR due to some failed checks.
     async startProcessing() {
-        await this._resetLabels();
+        if (!Config.dryRun())
+            await this._resetLabels();
 
         if (!(await this._checkMergeConditions("precondition")))
             return false;
@@ -28,10 +29,9 @@ class MergeContext {
         if (this._votingDelay > 0)
             return false;
 
-        if (Config.dryRun()) {
-            this._warnDryRun("start merging");
+        if (this._dryRun("start merging"))
             return false;
-        }
+
         await this._startMerging();
         await this._labelWaitingStagingChecks();
         return true;
@@ -71,13 +71,11 @@ class MergeContext {
         }
         assert(compareStatus === "ahead");
 
-        if (Config.dryRun()) {
-            this._warnDryRun("finish processing");
+        if (this._dryRun("finish processing"))
             return false;
-        }
-        if (Config.mergedRun()) {
+
+        if (this._mergedRun("finish processing")) {
             await this._labelPassedStagingChecks();
-            this._warnDryRun("finish processing", "merged_run");
             return false;
         }
 
@@ -235,10 +233,9 @@ class MergeContext {
     // Returns 'true' if the PR cleaup was completed, 'false'
     // otherwise.
     async _cleanupMerged() {
-        if (Config.dryRun()) {
-            this._warnDryRun("cleanup merged");
+        if (this._dryRun("cleanup merged"))
             return false;
-        }
+
         this._log("merged, cleanup...");
         await this._labelMerged();
         await GH.updatePR(this._number(), 'closed');
@@ -250,10 +247,9 @@ class MergeContext {
     // Returns 'true' if the PR cleaup was completed, 'false'
     // otherwise.
     async _cleanupMergeFailed(labelsCleanup) {
-        if (Config.dryRun()) {
-            this._warnDryRun("cleanup merge failed");
+        if (this._dryRun("cleanup merge failed"))
             return false;
-        }
+
         this._log("merge failed, cleanup...");
         if (labelsCleanup === undefined)
             labelsCleanup = this._labelFailedOther;
@@ -493,9 +489,18 @@ class MergeContext {
         Log.Logger.info("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
     }
 
-    _warnDryRun(msg, opt) {
-        const option = opt === undefined ? "dry_run" : opt;
-        this._log("skip " + msg + " due to " + option + " option");
+    _dryRun(msg) {
+        if (!Config.dryRun())
+            return false;
+        this._log("skip " + msg + " due to dry_run option");
+        return true;
+    }
+
+    _mergedRun(msg) {
+        if (!Config.mergedRun())
+            return false;
+        this._log("skip " + msg + " due to merged_run option");
+        return true;
     }
 
     _toString() {
