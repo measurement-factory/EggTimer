@@ -15,7 +15,7 @@ class ConfigOptions {
         this._owner = conf.owner;
         this._stagingBranch = conf.staging_branch;
         this._dryRun = conf.dry_run;
-        this._mergedRun = conf.merged_run;
+        this._stagedRun = conf.staged_run;
         this._necessaryApprovals = conf.necessary_approvals;
         this._sufficientApprovals = conf.sufficient_approvals;
         assert(this._sufficientApprovals > 1);
@@ -39,7 +39,7 @@ class ConfigOptions {
     owner() { return this._owner; }
     stagingBranch() { return "heads/" + this._stagingBranch; }
     dryRun() { return this._dryRun; }
-    mergedRun() { return this._mergedRun; }
+    stagedRun() { return this._stagedRun; }
     necessaryApprovals() { return this._necessaryApprovals; }
     sufficientApprovals() { return this._sufficientApprovals; }
     votingDelayMax() { return this._votingDelayMax; }

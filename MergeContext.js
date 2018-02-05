@@ -74,7 +74,7 @@ class MergeContext {
         if (this._dryRun("finish processing"))
             return false;
 
-        if (this._mergedRun("finish processing")) {
+        if (this._stagedRun("finish processing")) {
             await this._labelPassedStagingChecks();
             return false;
         }
@@ -496,10 +496,10 @@ class MergeContext {
         return true;
     }
 
-    _mergedRun(msg) {
-        if (!Config.mergedRun())
+    _stagedRun(msg) {
+        if (!Config.stagedRun())
             return false;
-        this._log("skip " + msg + " due to merged_run option");
+        this._log("skip " + msg + " due to staged_run option");
         return true;
     }
 

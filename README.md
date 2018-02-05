@@ -132,7 +132,7 @@ request state:
   have completed.
 * `M-passed-staging-checks`: Similar to the GitHub "green check" mark
   for the staging branch commit (but ignores failures of optional
-  checks). Applied only if `config::merged_run` option is on. The bot
+  checks). Applied only if `config::staged_run` option is on. The bot
   removes this label when either PR was successfully merged or staging
   results are no longer fresh/applicable.
 * `M-failed-staging-checks`: Essentially duplicates GitHub "red x" mark
@@ -263,7 +263,7 @@ All configuration fields are required.
 *repo* | The name of the GitHub repository that the bot should serve. | "squid"
 *owner* | The owner (a person or organization) of the GitHub repository. | "squid-cache"
 *dry_run*| A boolean option to enable read-only, no-modifications mode where the bot logs pull requests selected for merging but skips further merging steps, including PR labeling and commit tagging | false
-*merged_run*| A boolean option to enable no-final-modifications mode where the bot performs all the merging steps up to (and not including) the target branch update. Eligible PRs are merged into and tested on the staging branch but are never merged into their target branches. | false
+*staged_run*| A boolean option to enable no-final-modifications mode where the bot performs all the merging steps up to (and not including) the target branch update. Eligible PRs are merged into and tested on the staging branch but are never merged into their target branches. | false
 *staging_branch* | The name of the bot-maintained git branch used for testing PR changes as if they were merged into their target branch. | auto
 *necessary_approvals* | The minimal number of core developers required for a PR to be merged. PRs with fewer votes are not merged, regardless of their age. | 1
 *voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. The PR age string should comply with [timestring](https://github.com/mike182uk/timestring) parser. | "2d"
