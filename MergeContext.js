@@ -19,6 +19,8 @@ class MergeContext {
     // Returns 'true' if all PR checks passed successfully and merging
     // started,'false' if we can't start the PR due to some failed checks.
     async startProcessing() {
+        await this._resetLabels();
+
         if (!(await this._checkMergeConditions("precondition")))
             return false;
 
@@ -97,27 +99,23 @@ class MergeContext {
        }
     }
 
-    // Check 'staging tag' state as merge condition.
+    // Check 'staging tag' state as merge precondition.
     // Returns true if there is a fresh tag with 'failure' status.
     async _stagingFailed() {
         await this._loadTag();
         if (!this._tagSha)
             return false;
 
-        if (await this._tagIsFresh() ) {
+        const isFresh = await this._tagIsFresh();
+        this._log("staging tag is " + (isFresh ? "fresh" : "stale"));
+        if (isFresh) {
             const commitStatus = await this._checkStatuses(this._tagSha);
             if (commitStatus === 'failure') {
                 this._log("staging checks failed some time ago");
-                let msg = "staging tag is fresh";
                 if (this._prMergeable() !== true)
-                    msg += ", merge commit did not change due to conflicts with " + this._prBaseBranch();
-                this._log(msg);
+                    this._log("merge commit did not change due to conflicts with " + this._prBaseBranch());
                 return true;
-            } else {
-                this._log("warning: found not-failed staging tag");
             }
-        } else {
-            this._log("staging tag is stale");
         }
         if (!Config.dryRun())
             await GH.deleteReference(this._stagingTag());
@@ -143,8 +141,8 @@ class MergeContext {
     }
 
     // checks whether the PR is ready for merge
-    async _checkMergeConditions(desc) {
-        this._log("checking merge " + desc + "s...");
+    async _checkMergeConditions(what) {
+        this._log("checking merge " + what + "s...");
 
         const pr = await GH.getPR(this._number(), true);
         // refresh PR data
@@ -152,43 +150,51 @@ class MergeContext {
         this._pr = pr;
 
         if (!this._prOpen()) {
-            this._log(desc + " 'open' failed");
+            this._log(what + " 'open' failed");
             return false;
         }
 
-        const messageValid = this._prMessageValid();
-        if (!Config.dryRun())
-            await this._labelFailedDescription(messageValid);
-        if (!messageValid) {
-            this._log(desc + " 'commit message' failed");
-            return false;
+        // For now, PR commit message validation is only a precondition,
+        // do not validate it after 'staging commit' is created.
+        // TODO: check whether the commit message is unchanged between
+        // 'precondition' and 'postcondition' steps
+        if (what === "precondition") {
+            const messageValid = this._prMessageValid();
+            if (!Config.dryRun())
+                await this._labelFailedDescription(messageValid);
+            if (!messageValid) {
+                this._log(what + " 'commit message' failed");
+                return false;
+            }
         }
 
         if (!this._prMergeable()) {
-            this._log(desc + " 'mergeable' failed");
+            this._log(what + " 'mergeable' failed");
             return false;
         }
 
         const commitStatus = await this._checkStatuses(this._prHeadSha());
         if (commitStatus !== 'success') {
-            this._log(desc + " 'status' failed, status is " + commitStatus);
+            this._log(what + " 'status' failed, status is " + commitStatus);
             return false;
         }
 
         if (await this._hasLabel(Config.mergedLabel(), this._number())) {
-            this._log(desc + " 'already merged' failed");
+            this._log(what + " 'already merged' failed");
             return false;
         }
 
         const delay = await this._checkApproved();
         if (delay === null) {
-            this._log(desc + " 'approved' failed");
+            this._log(what + " 'approved' failed");
             return false;
         }
 
-        if (await this._stagingFailed()) {
-            this._log(desc + " 'no fresh tag with failed staging checks' failed'");
-            return false;
+        if (what === "precondition") {
+            if (await this._stagingFailed()) {
+                this._log(what + " 'fresh tag with failed staging checks' failed'");
+                return false;
+            }
         }
 
         this._votingDelay = delay;
@@ -401,10 +407,15 @@ class MergeContext {
             await this._addLabel(label);
     }
 
-    async _labelWaitingStagingChecks() {
+    async _resetLabels() {
         await this._removeLabel(Config.passedStagingChecksLabel());
         await this._removeLabel(Config.failedOtherLabel());
         await this._removeLabel(Config.failedStagingChecksLabel());
+        await this._removeLabel(Config.failedDescriptionLabel());
+        await this._removeLabel(Config.waitingStagingChecksLabel());
+    }
+
+    async _labelWaitingStagingChecks() {
         await this._addLabel(Config.waitingStagingChecksLabel());
     }
 
