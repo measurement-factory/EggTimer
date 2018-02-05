@@ -1,5 +1,8 @@
 const assert = require('assert');
-const nodeGitHub = require('github');
+const GitHub = require('@octokit/rest')({
+    host: 'api.github.com',
+    version: '3.0.0'
+});
 const Config = require('./Config.js');
 const Util = require('./Util.js');
 const Log = require('./Logger.js');
@@ -8,7 +11,6 @@ const ErrorContext = Util.ErrorContext;
 const commonParams = Util.commonParams;
 const logApiResult = Log.logApiResult;
 
-const GitHub = new nodeGitHub({ version: "3.0.0" });
 const GitHubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
 
 
