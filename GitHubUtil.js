@@ -121,19 +121,20 @@ function getCommit(sha) {
                 reject(new ErrorContext(err, getCommit.name, params));
                 return;
             }
-            const result = {sha: res.data.sha, treeSha: res.data.tree.sha, message: res.data.message};
+            const result = res.data;
             logApiResult(getCommit.name, params, result);
             resolve(result);
         });
   });
 }
 
-function createCommit(treeSha, message, parents) {
+function createCommit(treeSha, message, parents, author) {
     assert(!Config.dryRun());
     let params = commonParams();
     params.tree = treeSha;
     params.message = message;
     params.parents = parents;
+    params.author = author;
     return new Promise( (resolve, reject) => {
         GitHub.authenticate(GitHubAuthentication);
         GitHub.gitdata.createCommit(params, (err, res) => {

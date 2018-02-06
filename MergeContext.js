@@ -19,9 +19,6 @@ class MergeContext {
     // Returns 'true' if all PR checks passed successfully and merging
     // started,'false' if we can't start the PR due to some failed checks.
     async startProcessing() {
-        if (!Config.dryRun())
-            await this._resetLabels();
-
         if (!(await this._checkMergeConditions("precondition")))
             return false;
 
@@ -32,6 +29,7 @@ class MergeContext {
         if (this._dryRun("start merging"))
             return false;
 
+        await this._resetLabels();
         await this._startMerging();
         await this._labelWaitingStagingChecks();
         return true;
@@ -205,7 +203,7 @@ class MergeContext {
         const baseSha = await GH.getReference(this._prBaseBranchPath());
         const mergeSha = await GH.getReference("pull/" + this._number() + "/merge");
         const mergeCommit = await GH.getCommit(mergeSha);
-        const tempCommitSha = await GH.createCommit(mergeCommit.treeSha, this._prMessage(), [baseSha]);
+        const tempCommitSha = await GH.createCommit(mergeCommit.tree.sha, this._prMessage(), [baseSha], mergeCommit.author);
         this._tagSha = await GH.createReference(tempCommitSha, "refs/" + this._stagingTag());
         await GH.updateReference(Config.stagingBranch(), this._tagSha, true);
     }
@@ -215,6 +213,7 @@ class MergeContext {
     // throws on unexpected error
     async _finishMerging() {
         assert(this._tagSha);
+        assert(!Config.stagedRun());
         this._log("finish merging...");
         try {
             await GH.updateReference(this._prBaseBranchPath(), this._tagSha, false);

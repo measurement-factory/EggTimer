@@ -66,6 +66,8 @@ algorithm:
    * `parents`: The HEAD commit of the PR base branch.
    * `message`: PR title (with an appended PR number) plus the PR
      description.
+   * `author`: The PR author object (containing login and email) of the
+     PR merge commit.
    Note that the individual commits (including their messages) on the PR
    branch are ignored. The bot is effectively performing a squash merge
    using a GitHub-editable commit message.
