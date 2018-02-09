@@ -128,13 +128,14 @@ function getCommit(sha) {
   });
 }
 
-function createCommit(treeSha, message, parents, author) {
+function createCommit(treeSha, message, parents, author, committer) {
     assert(!Config.dryRun());
     let params = commonParams();
     params.tree = treeSha;
     params.message = message;
     params.parents = parents;
     params.author = author;
+    params.committer = committer;
     return new Promise( (resolve, reject) => {
         GitHub.authenticate(GitHubAuthentication);
         GitHub.gitdata.createCommit(params, (err, res) => {
@@ -370,6 +371,23 @@ function getCollaborators() {
     });
 }
 
+function getUser(username) {
+    const params = commonParams();
+    params.username = username;
+    return new Promise( (resolve, reject) => {
+      GitHub.authenticate(GitHubAuthentication);
+      GitHub.users.getForUser(params, (err, res) => {
+          if (err) {
+             reject(new ErrorContext(err, getUser.name, params));
+             return;
+          }
+          const result = {user: res.data};
+          logApiResult(getUser.name, params, result);
+          resolve(res.data);
+      });
+    });
+}
+
 module.exports = {
     getPRList: getPRList,
     getLabels: getLabels,
@@ -388,6 +406,7 @@ module.exports = {
     addLabels: addLabels,
     removeLabel: removeLabel,
     getProtectedBranchRequiredStatusChecks: getProtectedBranchRequiredStatusChecks,
-    getCollaborators: getCollaborators
+    getCollaborators: getCollaborators,
+    getUser: getUser
 };
 
