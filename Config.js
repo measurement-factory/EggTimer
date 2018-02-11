@@ -23,6 +23,8 @@ class ConfigOptions {
         this._votingDelayMin = timestring(conf.voting_delay_min, 'ms');
         this._loggerParams = conf.logger_params;
 
+        // unused
+        this._githubUserNoreplyEmail = null;
         this._githubUserEmail = null;
 
         const allOptions = Object.values(this);
@@ -32,10 +34,17 @@ class ConfigOptions {
     }
 
     githubUser() { return this._githubUser; }
+    // unused
     // 'noreply' email (see https://help.github.com/articles/about-commit-email-addresses/)
-    githubUserEmail(id) {
+    githubUserNoreplyEmail(id) {
         if (id !== undefined)
-            this._githubUserEmail = id + "+" + this.githubUser() + "@users.noreply.github.com";
+            this._githubUserNoreplyEmail = id + "+" + this.githubUser() + "@users.noreply.github.com";
+        return this._githubUserNoreplyEmail;
+    }
+    // primary bot user email
+    githubUserEmail(email) {
+        if (email !== undefined)
+            this._githubUserEmail = email;
         return this._githubUserEmail;
     }
     githubToken() { return this._githubToken; }

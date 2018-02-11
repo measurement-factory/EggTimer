@@ -203,13 +203,13 @@ class MergeContext {
         const baseSha = await GH.getReference(this._prBaseBranchPath());
         const mergeSha = await GH.getReference("pull/" + this._number() + "/merge");
         const mergeCommit = await GH.getCommit(mergeSha);
-        let committerEmail = Config.githubUserEmail();
-        if (committerEmail === null) {
-            const user = await GH.getUser(Config.githubUser());
-            committerEmail = Config.githubUserEmail(user.id);
+        if (Config.githubUserEmail() === null) {
+            const email = await this.primaryEmail();
+            assert(email);
+            Config.githubUserEmail(email);
         }
         let now = new Date();
-        const committer = {name: Config.githubUser(), email: committerEmail, date: now.toISOString()};
+        const committer = {name: Config.githubUser(), email: Config.githubUserEmail(), date: now.toISOString()};
         const tempCommitSha = await GH.createCommit(mergeCommit.tree.sha, this._prMessage(), [baseSha], mergeCommit.author, committer);
         this._tagSha = await GH.createReference(tempCommitSha, "refs/" + this._stagingTag());
         await GH.updateReference(Config.stagingBranch(), this._tagSha, true);
@@ -362,6 +362,15 @@ class MergeContext {
         const prevLen = requiredChecks.length;
         requiredChecks = requiredChecks.filter(check => check.state === 'success');
         return prevLen === requiredChecks.length ? 'success' : 'failure';
+    }
+
+    async primaryEmail() {
+        const emails = await GH.getUserEmails();
+        for (let e of emails) {
+            if (e.primary)
+                return e.email;
+        }
+        return null;
     }
 
     // Label manipulation methods

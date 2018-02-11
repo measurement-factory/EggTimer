@@ -371,6 +371,7 @@ function getCollaborators() {
     });
 }
 
+// unused
 function getUser(username) {
     const params = commonParams();
     params.username = username;
@@ -383,6 +384,22 @@ function getUser(username) {
           }
           const result = {user: res.data};
           logApiResult(getUser.name, params, result);
+          resolve(res.data);
+      });
+    });
+}
+
+function getUserEmails() {
+    const params = commonParams();
+    return new Promise( (resolve, reject) => {
+      GitHub.authenticate(GitHubAuthentication);
+      GitHub.users.getEmails(params, (err, res) => {
+          if (err) {
+             reject(new ErrorContext(err, getUserEmails.name, params));
+             return;
+          }
+          const result = {emails: res.data};
+          logApiResult(getUserEmails.name, params, result);
           resolve(res.data);
       });
     });
@@ -407,6 +424,7 @@ module.exports = {
     removeLabel: removeLabel,
     getProtectedBranchRequiredStatusChecks: getProtectedBranchRequiredStatusChecks,
     getCollaborators: getCollaborators,
-    getUser: getUser
+    getUser: getUser,
+    getUserEmails: getUserEmails
 };
 
