@@ -352,7 +352,7 @@ class MergeContext {
         let requiredChecks = [];
         // filter out non-required checks
         for (let st of combinedStatus.statuses) {
-            if (requiredContexts.find(el => el === st.context))
+            if (requiredContexts.find(el => el.trim() === st.context.trim()))
                 requiredChecks.push({context: st.context, state: st.state});
         }
 
