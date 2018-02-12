@@ -76,10 +76,13 @@ algorithm:
 3. Remember the staging commit using a "staging tag". The bot uses this
    git tag to identify the being-merged PR in case the bot is killed
    while running the subsequent merging steps (that may take a while).
-4. Wait for GitHub to report CI test results for the staging branch. The
-   project CI infrastructure is expected to auto-test the staging branch
-   on every change. A required check failure is a step failure (see
-   below for error handling).
+4. Wait for GitHub to report exactly `config::staging_checks` CI test
+   results for the staging branch. The project CI infrastructure is
+   expected to auto-test the staging branch on every change. A check
+   failure is a PR-specific step failure -- in GitHub terminology, all
+   staging checks are currently deemed "required". If discovered, any
+   extra check is considered a configuration problem (not related to any
+   specific PR). Error handling is detailed in the next section.
 5. Fast forward the PR target branch (usually "master") to the
    now-tested staging commit.
 6. Label the PR as merged (see below for PR labels), close the PR, and
@@ -130,8 +133,8 @@ request state:
 * `M-waiting-staging-checks`: The bot determined that the PR is eligible
   for merging, successfully completed the initial merging steps that are
   supposed to trigger CI tests, and is now waiting for the CI test
-  results. The bot removes this label when it notices that all tests
-  have completed.
+  results. The bot removes this label when it notices that all
+  `config::staging_checks` tests have completed.
 * `M-passed-staging-checks`: Similar to the GitHub "green check" mark
   for the staging branch commit (but ignores failures of optional
   checks). Applied only if `config::staged_run` option is on. The bot
@@ -271,6 +274,7 @@ All configuration fields are required.
 *voting_delay_min*| The minimum merging age of a PR. Younger PRs are not merged, regardless of the number of votes. The PR age string should comply with [timestring](https://github.com/mike182uk/timestring) parser. | "2d"
 *sufficient_approvals* | The minimal number of core developers required for a PR to be merged fast (i.e., without waiting for `config::voting_delay_max`) | 2
 *voting_delay_max* | The maximum merging age of a PR that has fewer than `config::sufficient_approvals` votes. The PR age string should comply with [timestring](https://github.com/mike182uk/timestring) parser. | "10d"
+*staging_checks*| The expected number of CI tests executed against the staging branch. | 2
 *logger_params* | A JSON-formatted parameter list for the [Bunyan](https://github.com/trentm/node-bunyan) logging library [constructor](https://github.com/trentm/node-bunyan#constructor-api). | <pre>{<br>    "name": "eggtimer",<br>    "streams": [ ... ]<br>}</pre>
 
 
