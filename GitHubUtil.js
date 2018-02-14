@@ -11,7 +11,7 @@ const ErrorContext = Util.ErrorContext;
 const commonParams = Util.commonParams;
 const logApiResult = Log.logApiResult;
 
-const GitHubAuthentication = { type: 'token', username: Config.githubUser(), token: Config.githubToken() };
+const GitHubAuthentication = { type: 'token', username: Config.githubUserLogin(), token: Config.githubToken() };
 
 
 function getPRList() {
@@ -371,7 +371,6 @@ function getCollaborators() {
     });
 }
 
-// unused
 function getUser(username) {
     const params = commonParams();
     params.username = username;

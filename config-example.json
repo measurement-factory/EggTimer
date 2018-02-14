@@ -1,5 +1,5 @@
 {
-    "github_username": "github-bot-username",
+    "github_login": "github-bot-login",
     "github_token": "425af12a0743502b322e93a015bcf868e324d56a",
     "github_webhook_path": "/egg-timer",
     "github_webhook_secret": "7205c3fe23514f172f8816b42159bd3f1959f61e",

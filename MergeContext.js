@@ -203,13 +203,10 @@ class MergeContext {
         const baseSha = await GH.getReference(this._prBaseBranchPath());
         const mergeSha = await GH.getReference("pull/" + this._number() + "/merge");
         const mergeCommit = await GH.getCommit(mergeSha);
-        if (Config.githubUserEmail() === null) {
-            const email = await this.primaryEmail();
-            assert(email);
-            Config.githubUserEmail(email);
-        }
+        if (!Config.githubUserName())
+            await this._acquireUserProperties();
         let now = new Date();
-        const committer = {name: Config.githubUser(), email: Config.githubUserEmail(), date: now.toISOString()};
+        const committer = {name: Config.githubUserName(), email: Config.githubUserEmail(), date: now.toISOString()};
         const tempCommitSha = await GH.createCommit(mergeCommit.tree.sha, this._prMessage(), [baseSha], mergeCommit.author, committer);
         this._tagSha = await GH.createReference(tempCommitSha, "refs/" + this._stagingTag());
         await GH.updateReference(Config.stagingBranch(), this._tagSha, true);
@@ -364,13 +361,19 @@ class MergeContext {
         return prevLen === requiredChecks.length ? 'success' : 'failure';
     }
 
-    async primaryEmail() {
+    async _acquireUserProperties() {
         const emails = await GH.getUserEmails();
         for (let e of emails) {
-            if (e.primary)
-                return e.email;
+            if (e.primary) {
+                Config.githubUserEmail(e.email);
+                break;
+            }
         }
-        return null;
+        assert(Config.githubUserEmail());
+
+        const user = await GH.getUser(Config.githubUserLogin());
+        Config.githubUserName(user.name);
+        assert(Config.githubUserName());
     }
 
     // Label manipulation methods

@@ -5,7 +5,7 @@ const assert = require('assert');
 class ConfigOptions {
     constructor(fname) {
         const conf = JSON.parse(fs.readFileSync(fname));
-        this._githubUser = conf.github_username;
+        this._githubUserLogin = conf.github_login;
         this._githubToken = conf.github_token;
         this._githubWebhookPath = conf.github_webhook_path;
         this._githubWebhookSecret = conf.github_webhook_secret;
@@ -25,7 +25,9 @@ class ConfigOptions {
 
         // unused
         this._githubUserNoreplyEmail = null;
+
         this._githubUserEmail = null;
+        this._githubUserName = null;
 
         const allOptions = Object.values(this);
         for (let v of allOptions) {
@@ -33,12 +35,17 @@ class ConfigOptions {
         }
     }
 
-    githubUser() { return this._githubUser; }
+    githubUserLogin() { return this._githubUserLogin; }
+    githubUserName(name) {
+        if (name !== undefined)
+            this._githubUserName = name;
+        return this._githubUserName;
+    }
     // unused
     // 'noreply' email (see https://help.github.com/articles/about-commit-email-addresses/)
     githubUserNoreplyEmail(id) {
         if (id !== undefined)
-            this._githubUserNoreplyEmail = id + "+" + this.githubUser() + "@users.noreply.github.com";
+            this._githubUserNoreplyEmail = id + "+" + this.githubUserLogin() + "@users.noreply.github.com";
         return this._githubUserNoreplyEmail;
     }
     // primary bot user email

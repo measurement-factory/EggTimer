@@ -259,8 +259,8 @@ All configuration fields are required.
 
 *Field* | *Description* | *Example*
 --- | --- | ---
-*github_username* | The bot uses this GitHub user account for all GitHub communications, including target branch updates. This user needs to have write access to the repository.| "github_bot_username"
-*github_token* | An authentication token generated for the associated `config::github_bot_username`. | "425a..."
+*github_login* | The bot uses this GitHub user account for all GitHub communications, including target branch updates. This user needs to have write access to the repository.| "github_bot_login"
+*github_token* | An authentication token generated for the associated `config::github_login`. | "425a..."
 *github_webhook_path* | GitHub webhook URL path. | "/egg-timer"
 *github_webhook_secret* | A random secret string to be used here and in the GitHub webhook configuration. | "72fe..."
 *host* | The bot listens for GitHub requests on this IP address. Given an empty string, the bot listens on all available IP interfaces. | ""
