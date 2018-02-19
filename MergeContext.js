@@ -19,6 +19,9 @@ class MergeContext {
     // Returns 'true' if all PR checks passed successfully and merging
     // started,'false' if we can't start the PR due to some failed checks.
     async startProcessing() {
+        if (!this._dryRun("reset labels before precondition checking"))
+            await this._unlabelPreconditionsChecking();
+
         if (!(await this._checkMergeConditions("precondition")))
             return false;
 
@@ -29,7 +32,7 @@ class MergeContext {
         if (this._dryRun("start merging"))
             return false;
 
-        await this._resetLabels();
+        await this._unlabelPreconditionsChecked();
         await this._startMerging();
         await this._labelWaitingStagingChecks();
         return true;
@@ -421,12 +424,15 @@ class MergeContext {
             await this._addLabel(label);
     }
 
-    async _resetLabels() {
+    async _unlabelPreconditionsChecking() {
         await this._removeLabel(Config.passedStagingChecksLabel());
+        await this._removeLabel(Config.waitingStagingChecksLabel());
+    }
+
+    async _unlabelPreconditionsChecked() {
         await this._removeLabel(Config.failedOtherLabel());
         await this._removeLabel(Config.failedStagingChecksLabel());
         await this._removeLabel(Config.failedDescriptionLabel());
-        await this._removeLabel(Config.waitingStagingChecksLabel());
     }
 
     async _labelWaitingStagingChecks() {
