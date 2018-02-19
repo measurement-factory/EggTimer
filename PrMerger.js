@@ -66,7 +66,7 @@ class PrMerger {
     // Loads 'being-in-merge' PR, if exists (the PR has tag and staging_branch points to the tag).
     async _current() {
         Logger.info("Looking for the current PR...");
-        const stagingSha = await GH.getReference(Config.stagingBranch());
+        const stagingSha = await GH.getReference(Config.stagingBranchPath());
         // request all repository tags
         let tags = await GH.getTags();
         // search for a tag, the staging_branch points to,

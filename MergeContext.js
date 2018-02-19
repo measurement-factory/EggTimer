@@ -209,7 +209,7 @@ class MergeContext {
         const committer = {name: Config.githubUserName(), email: Config.githubUserEmail(), date: now.toISOString()};
         const tempCommitSha = await GH.createCommit(mergeCommit.tree.sha, this._prMessage(), [baseSha], mergeCommit.author, committer);
         this._tagSha = await GH.createReference(tempCommitSha, "refs/" + this._stagingTag());
-        await GH.updateReference(Config.stagingBranch(), this._tagSha, true);
+        await GH.updateReference(Config.stagingBranchPath(), this._tagSha, true);
     }
 
     // fast-forwards base into staging_branch
