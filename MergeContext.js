@@ -64,12 +64,17 @@ class MergeContext {
             this._log("already merged");
             return await this._cleanupMerged();
         }
-        // note that _needRestart() would notice that the tag is "diverged",
+        // note that _needRestart() below would notice that the tag is "diverged",
         // but we check compareStatus first to avoid useless api requests
-        if (compareStatus === "diverged" || await this._needRestart()) {
+        if (compareStatus === "diverged") {
             this._log("PR branch and it's base branch diverged");
             return await this._cleanupMergeFailed();
         }
+        if (await this._needRestart()) {
+            this._log("PR will be restarted");
+            return await this._cleanupMergeFailed();
+        }
+
         assert(compareStatus === "ahead");
 
         if (this._dryRun("finish processing"))
@@ -150,6 +155,11 @@ class MergeContext {
 
         if (!this._prOpen()) {
             this._log(what + " 'open' failed");
+            return false;
+        }
+
+        if (this._prInProgress()) {
+            this._log(what + " 'not in progress' failed");
             return false;
         }
 
@@ -483,6 +493,8 @@ class MergeContext {
         }
         return true;
     }
+
+    _prInProgress() { return this._pr.title.startsWith('WIP:'); }
 
     _prRequestedReviewers() {
         let reviewers = [];
