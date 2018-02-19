@@ -45,16 +45,16 @@ class MergeContext {
 
         if (!this._prOpen()) {
             this._log("was unexpectedly closed");
-            return await this._cleanupMergeFailed();
+            return await this._cleanupMergeFailed(true);
         }
 
-        const commitStatus = await this._checkStatuses(this._tagSha);
+        const commitStatus = await this._checkStatuses(this._tagSha, Config.stagingChecks());
         if (commitStatus === 'pending') {
             this._log("waiting for more staging checks completing");
             return false;
         } else if (commitStatus === 'failure') {
             this._log("staging checks failed");
-            return await this._cleanupMergeFailed(this._labelFailedStagingChecks);
+            return await this._cleanupMergeFailed(false, this._labelFailedStagingChecks);
         }
         assert(commitStatus === 'success');
         this._log("staging checks succeeded");
@@ -68,11 +68,11 @@ class MergeContext {
         // but we check compareStatus first to avoid useless api requests
         if (compareStatus === "diverged") {
             this._log("PR branch and it's base branch diverged");
-            return await this._cleanupMergeFailed();
+            return await this._cleanupMergeFailed(true);
         }
         if (await this._needRestart()) {
             this._log("PR will be restarted");
-            return await this._cleanupMergeFailed();
+            return await this._cleanupMergeFailed(true);
         }
 
         assert(compareStatus === "ahead");
@@ -113,7 +113,7 @@ class MergeContext {
         const isFresh = await this._tagIsFresh();
         this._log("staging tag is " + (isFresh ? "fresh" : "stale"));
         if (isFresh) {
-            const commitStatus = await this._checkStatuses(this._tagSha);
+            const commitStatus = await this._checkStatuses(this._tagSha, Config.stagingChecks());
             if (commitStatus === 'failure') {
                 this._log("staging checks failed some time ago");
                 if (this._prMergeable() !== true)
@@ -131,7 +131,7 @@ class MergeContext {
         const tagCommit = await GH.getCommit(this._tagSha);
         const prMergeSha = await GH.getReference(this._mergePath());
         const prCommit = await GH.getCommit(prMergeSha);
-        return tagCommit.treeSha === prCommit.treeSha;
+        return tagCommit.tree.sha === prCommit.tree.sha;
     }
 
     // whether the being-in-merge PR state changed so that
@@ -238,7 +238,7 @@ class MergeContext {
         } catch (e) {
             if (e.name === 'ErrorContext' && e.unprocessable()) {
                 this._log("fast-forwarding failed");
-                await this._cleanupMergeFailed();
+                await this._cleanupMergeFailed(true);
                 return false;
             }
             throw e;
@@ -262,15 +262,16 @@ class MergeContext {
     // Adjusts PR when it's merge was failed(labels and tag).
     // Returns 'true' if the PR cleaup was completed, 'false'
     // otherwise.
-    async _cleanupMergeFailed(labelsCleanup) {
+    async _cleanupMergeFailed(deleteTag, labelsCleanup) {
         if (this._dryRun("cleanup merge failed"))
             return false;
-
         this._log("merge failed, cleanup...");
         if (labelsCleanup === undefined)
             labelsCleanup = this._labelFailedOther;
-        await labelsCleanup.bind(this);
-        await GH.deleteReference(this._stagingTag());
+        labelsCleanup = labelsCleanup.bind(this);
+        await labelsCleanup();
+        if (deleteTag)
+            await GH.deleteReference(this._stagingTag());
         return true;
     }
 
@@ -338,7 +339,8 @@ class MergeContext {
     // 'pending' if some of required checks are 'pending'
     // 'success' if all of required are 'success'
     // 'error' otherwise
-    async _checkStatuses(ref) {
+    // checksNumber: the explicit number of requires status checks
+    async _checkStatuses(ref, checksNumber) {
         let requiredContexts;
         try {
             requiredContexts = await GH.getProtectedBranchRequiredStatusChecks(this._prBaseBranch());
@@ -357,16 +359,26 @@ class MergeContext {
             // rely on all available checks then
             return combinedStatus.state;
         }
+        // If checksNumber was passed, we use required status context string matching
+        // for required checks counting. Gotten tag checks are compared against those
+        // configured for protected base branch. For simplicity, we use 'starts with'
+        // matching rule.
+        // For example, if we configured three required checks(Config.stagingChecks=3) but
+        // the branch has a single required check named 'Jenkins(build test)',
+        // the bot will wait for three checks with 'Jenkins(build test).*' names.
+        const needMatching = checksNumber !== undefined;
+        const requiredChecksNumber = needMatching ? checksNumber : requiredContexts.length;
 
         // An array of [{context, state}] elements
         let requiredChecks = [];
         // filter out non-required checks
         for (let st of combinedStatus.statuses) {
-            if (requiredContexts.find(el => el.trim() === st.context.trim()))
+            if (requiredContexts.find((el) => { return needMatching ?
+                         st.context.startsWith(el.trim()) : (el.trim() === st.context.trim());}))
                 requiredChecks.push({context: st.context, state: st.state});
         }
 
-        if (requiredChecks.length < requiredContexts.length || requiredChecks.find(check => check.state === 'pending'))
+        if (requiredChecks.length < requiredChecksNumber || requiredChecks.find(check => check.state === 'pending'))
             return 'pending';
 
         const prevLen = requiredChecks.length;
