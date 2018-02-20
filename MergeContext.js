@@ -408,6 +408,16 @@ class MergeContext {
         return labels.find(lbl => lbl.name === label) !== undefined;
     }
 
+    async _removeLabelsIf(labels) {
+        const currentLabels = await GH.getLabels(this._number());
+        for (let label of labels) {
+            if (currentLabels.find(lbl => lbl.name === label) !== undefined)
+                await this._removeLabel(label);
+            else
+                this._log("_removeLabelsIf: skip non-existent " + label);
+        }
+    }
+
     async _removeLabel(label) {
         try {
             await GH.removeLabel(label, this._number());
@@ -421,40 +431,41 @@ class MergeContext {
     }
 
     async _addLabel(label) {
+        const currentLabels = await GH.getLabels(this._number());
+        if (currentLabels.find(lbl => lbl.name === label) !== undefined) {
+            this._log("addLabel: skip already existing " + label);
+            return;
+        }
+
         let params = Util.commonParams();
         params.number = this._number();
         params.labels = [];
         params.labels.push(label);
-        try {
-            await GH.addLabels(params);
-        } catch (e) {
-            // TODO: also extract and check for "already_exists" code:
-            // { "message": "Validation Failed", "errors": [ { "resource": "Label", "code": "already_exists", "field": "name" } ] }
-            if (e.name === 'ErrorContext' && e.unprocessable()) {
-                this._log("addLabel: " + label + " already exists");
-                return;
-            }
-            throw e;
-        }
+
+        await GH.addLabels(params);
     }
 
     async _labelFailedDescription(isValid) {
         const label = Config.failedDescriptionLabel();
         if (isValid)
-            await this._removeLabel(label);
+            await this._removeLabelsIf([label]);
         else
             await this._addLabel(label);
     }
 
     async _unlabelPreconditionsChecking() {
-        await this._removeLabel(Config.passedStagingChecksLabel());
-        await this._removeLabel(Config.waitingStagingChecksLabel());
+        await this._removeLabelsIf([
+                Config.passedStagingChecksLabel(),
+                Config.waitingStagingChecksLabel()
+                ]);
     }
 
     async _unlabelPreconditionsChecked() {
-        await this._removeLabel(Config.failedOtherLabel());
-        await this._removeLabel(Config.failedStagingChecksLabel());
-        await this._removeLabel(Config.failedDescriptionLabel());
+        await this._removeLabelsIf([
+                Config.failedOtherLabel(),
+                Config.failedStagingChecksLabel(),
+                Config.failedDescriptionLabel()
+                ]);
     }
 
     async _labelWaitingStagingChecks() {
@@ -462,24 +473,28 @@ class MergeContext {
     }
 
     async _labelMerged() {
-        await this._removeLabel(Config.waitingStagingChecksLabel());
-        await this._removeLabel(Config.passedStagingChecksLabel());
+        await this._removeLabelsIf([
+                Config.waitingStagingChecksLabel(),
+                Config.passedStagingChecksLabel()
+                ]);
         await this._addLabel(Config.mergedLabel());
     }
 
     async _labelFailedOther() {
-        await this._removeLabel(Config.waitingStagingChecksLabel());
-        await this._removeLabel(Config.passedStagingChecksLabel());
+        await this._removeLabelsIf([
+                Config.waitingStagingChecksLabel(),
+                Config.passedStagingChecksLabel()
+                ]);
         await this._addLabel(Config.failedOtherLabel());
     }
 
     async _labelFailedStagingChecks() {
-        await this._removeLabel(Config.waitingStagingChecksLabel());
+        await this._removeLabelsIf([ Config.waitingStagingChecksLabel() ]);
         await this._addLabel(Config.failedStagingChecksLabel());
     }
 
     async _labelPassedStagingChecks() {
-        await this._removeLabel(Config.waitingStagingChecksLabel());
+        await this._removeLabelsIf([ Config.waitingStagingChecksLabel() ]);
         await this._addLabel(Config.passedStagingChecksLabel());
     }
 
@@ -533,8 +548,12 @@ class MergeContext {
 
     _mergePath() { return "pull/" + this._pr.number + "/merge"; }
 
+    _debugString() {
+        return "PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit);
+    }
+
     _log(msg) {
-        Log.Logger.info("PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit) + "):", msg);
+        Log.Logger.info(this._debugString() + "):", msg);
     }
 
     _dryRun(msg) {
@@ -552,7 +571,7 @@ class MergeContext {
     }
 
     _toString() {
-        let str = "PR" + this._pr.number + "(head: " + this._pr.head.sha.substr(0, this._shaLimit);
+        let str = this._debugString();
         if (this._tagSha !== null)
             str += ", tag: " + this._tagSha.substr(0, this._shaLimit);
         return str + ")";
